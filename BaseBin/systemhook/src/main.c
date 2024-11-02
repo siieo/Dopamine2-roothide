@@ -294,6 +294,8 @@ int posix_spawn_hook_roothide(pid_t *restrict pidp, const char *restrict path, s
 			return 99;
 		}
 	}
+	char **envc = envbuf_mutcopy((const char **)envp);
+	envbuf_setenv(&envc, "DYLD_IN_CACHE", "0");
 
 	int pid = 0;
 	int ret = posix_spawn_hook_shared(&pid, path, desc, argv, envc, orig, trust_binary, set_process_debugged, jetsamMultiplier);
