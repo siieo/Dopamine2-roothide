@@ -47,48 +47,41 @@ bool string_has_suffix(const char* str, const char* suffix)
 
 void string_enumerate_components(const char *string, const char *separator, void (^enumBlock)(const char *pathString, bool *stop))
 {
-	char *stringCopy = strdup(string);
-	char *curString = strtok(stringCopy, separator);
-	while (curString != NULL) {
+	char *stringCopy;
+	char *saveptr;
+	char *curString;
+
+	for (curString = strtok_r((char *)string, separator, &saveptr);
+		 curString != NULL;
+		 curString = strtok_r(NULL, separator, &saveptr))
+	{
 		bool stop = false;
 		enumBlock(curString, &stop);
 		if (stop) break;
-		curString = strtok(NULL, separator);
 	}
-	free(stringCopy);
 }
 
 static kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
 {
-	if (!strcmp(path, "/usr/libexec/xpcproxy")) {
-		if (argv) {
-			if (argv[0]) {
-				if (argv[1]) {
-					if (string_has_prefix(argv[1], "com.apple.WebKit.WebContent")) {
-						// The most sandboxed process on the system, we can't support it on iOS 16+ for now
-						if (__builtin_available(iOS 16.0, *)) {
-							return 0;
-						}
-					}
-				}
-			}
+	if (!strcmp(path, "/usr/libexec/xpcproxy") && argv && argv[0] && argv[1] &&
+		string_has_prefix(argv[1], "com.apple.WebKit.WebContent")) {
+		// Skip injection for WebKit WebContent processes on iOS 16+
+		if (__builtin_available(iOS 16.0, *)) {
+			return 0;
 		}
 	}
 
-	// Blacklist to ensure general system stability
-	// I don't like this but for some processes it seems neccessary
-	const char *processBlacklist[] = {
-		"/System/Library/Frameworks/GSS.framework/Helpers/GSSCred",
-		"/System/Library/PrivateFrameworks/DataAccess.framework/Support/dataaccessd",
-		"/System/Library/PrivateFrameworks/IDSBlastDoorSupport.framework/XPCServices/IDSBlastDoorService.xpc/IDSBlastDoorService",
-		"/System/Library/PrivateFrameworks/MessagesBlastDoorSupport.framework/XPCServices/MessagesBlastDoorService.xpc/MessagesBlastDoorService",
+    // Blacklist check
+    const char *processBlacklist[] = { 
+	"/System/Library/Frameworks/GSS.framework/Helpers/GSSCred",
+	"/System/Library/PrivateFrameworks/DataAccess.framework/Support/dataaccessd",
+	"/System/Library/PrivateFrameworks/IDSBlastDoorSupport.framework/XPCServices/IDSBlastDoorService.xpc/IDSBlastDoorService",
+	"/System/Library/PrivateFrameworks/MessagesBlastDoorSupport.framework/XPCServices/MessagesBlastDoorService.xpc/MessagesBlastDoorService",
 	};
-	size_t blacklistCount = sizeof(processBlacklist) / sizeof(processBlacklist[0]);
-	for (size_t i = 0; i < blacklistCount; i++)
-	{
+
+	for (size_t i = 0; i < sizeof(processBlacklist) / sizeof(processBlacklist[0]); i++) {
 		if (!strcmp(processBlacklist[i], path)) return 0;
 	}
-
 	return (kSpawnConfigInject | kSpawnConfigTrust);
 }
 
@@ -215,19 +208,11 @@ static int spawn_exec_hook_common(const char *path,
 		// In this case we do not want to inject anything
 		const char *safeModeValue = envbuf_getenv((const char **)envp, "_SafeMode");
 		const char *msSafeModeValue = envbuf_getenv((const char **)envp, "_MSSafeMode");
-		if (safeModeValue) {
-			if (!strcmp(safeModeValue, "1")) {
-				if(isPlatformProcess||isAppPath) shouldInsertJBEnv = false;
-				hasSafeModeVariable = true;
-				break;
-			}
-		}
-		if (msSafeModeValue) {
-			if (!strcmp(msSafeModeValue, "1")) {
-				if(isPlatformProcess||isAppPath) shouldInsertJBEnv = false;
-				hasSafeModeVariable = true;
-				break;
-			}
+		if ((safeModeValue && !strcmp(safeModeValue, "1")) || 
+		    (msSafeModeValue && !strcmp(msSafeModeValue, "1"))) {
+		    shouldInsertJBEnv = false;
+		    hasSafeModeVariable = true;
+		    break;
 		}
 
 		int proctype = 0;

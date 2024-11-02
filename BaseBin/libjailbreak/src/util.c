@@ -587,7 +587,7 @@ int __exec_cmd_internal_va(bool suspended, bool root, bool waitForExit, pid_t *p
 	short flags=0;
 	posix_spawnattr_getflags(&attr, &flags);
 	posix_spawnattr_setflags(&attr, flags | POSIX_SPAWN_START_SUSPENDED);
-	
+
 	pid_t spawnedPid = 0;
 	int spawnError = posix_spawn(&spawnedPid, binary, NULL, &attr, (char *const *)argv, environ);
 	if (attr) posix_spawnattr_destroy(&attr);

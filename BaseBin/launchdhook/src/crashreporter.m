@@ -520,4 +520,3 @@ void crashreporter_start(void)
 		crashreporter_resume();
 	}
 }
-

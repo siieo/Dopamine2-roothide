@@ -1,5 +1,5 @@
 #include "common.h"
-
+#include "envbuf.h"
 #include <mach-o/dyld.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -33,15 +33,9 @@ static int load_executable_path(void)
 static char *JB_SandboxExtensions = NULL;
 void apply_sandbox_extensions(void)
 {
-	if (JB_SandboxExtensions) {
-		char *JB_SandboxExtensions_dup = strdup(JB_SandboxExtensions);
-		char *extension = strtok(JB_SandboxExtensions_dup, "|");
-		while (extension != NULL) {
+	if (JB_SandboxExtensions && *JB_SandboxExtensions)
+		for (char *extension = strtok(JB_SandboxExtensions, "|"); extension; extension = strtok(NULL, "|"))
 			sandbox_extension_consume(extension);
-			extension = strtok(NULL, "|");
-		}
-		free(JB_SandboxExtensions_dup);
-	}
 }
 
 void *(*sandbox_apply_orig)(void *) = NULL;
@@ -85,7 +79,7 @@ void* dyld_dlopen_hook(void *dyld, const char* path, int mode)
 	if (path && !(mode & RTLD_NOLOAD)) {
 		jbclient_trust_library(path, __builtin_return_address(0));
 	}
-    __attribute__((musttail)) return dyld_dlopen_orig(dyld, path, mode);
+	__attribute__((musttail)) return dyld_dlopen_orig(dyld, path, mode);
 }
 
 void* (*dyld_dlopen_from_orig)(void *dyld, const char* path, int mode, void* addressInCaller);
@@ -138,7 +132,9 @@ int ptrace_hook(int request, pid_t pid, caddr_t addr, int data)
 	// but still want to be able to attach a debugger to them
 	if (r == 0 && (request == PT_ATTACHEXC || request == PT_ATTACH)) {
 		jbclient_platform_set_process_debugged(pid, true);
-		jbclient_platform_set_process_debugged(getpid(), true);
+		if (!gFullyDebugged) {
+	jbclient_platform_set_process_debugged(getpid(), true);
+}
 	}
 
 	return r;
@@ -222,58 +218,41 @@ int csops_audittoken_hook(pid_t pid, unsigned int ops, void *useraddr, size_t us
 
 bool should_enable_tweaks(void)
 {
-	if (access(JBROOT_PATH("/basebin/.safe_mode"), F_OK) == 0) {
-		return false;
-	}
+	static bool tweaksEnabled = false;
+	static bool initialized = false;
 
-	char *tweaksDisabledEnv = getenv("DISABLE_TWEAKS");
-	if (tweaksDisabledEnv) {
-		if (!strcmp(tweaksDisabledEnv, "1")) {
+	if (!initialized) {
+		initialized = true;
+		// Return early if in safe mode
+		if (access(JBROOT_PATH("/basebin/.safe_mode"), F_OK) == 0) {
 			return false;
 		}
-	}
 
-	const char *safeModeValue = getenv("_SafeMode");
-	const char *msSafeModeValue = getenv("_MSSafeMode");
-	if (safeModeValue) {
-		if (!strcmp(safeModeValue, "1")) {
+		// Check for environment variable DISABLE_TWEAKS
+		const char *tweaksDisabledEnv = getenv("DISABLE_TWEAKS");
+		if (tweaksDisabledEnv && !strcmp(tweaksDisabledEnv, "1")) {
 			return false;
 		}
-	}
-	if (msSafeModeValue) {
-		if (!strcmp(msSafeModeValue, "1")) {
+
+		// Check specific system binaries
+		if (string_has_suffix(gExecutablePath, "/usr/libexec/xpcproxy") ||
+			string_has_suffix(gExecutablePath, "Dopamine.app/Dopamine")) {
 			return false;
 		}
-	}
 
-	const char *tweaksDisabledPathSuffixes[] = {
-		// System binaries
-		"/usr/libexec/xpcproxy",
-
-		// Dopamine app itself (jailbreak detection bypass tweaks can break it)
-		"Dopamine.app/Dopamine",
-	};
-	for (size_t i = 0; i < sizeof(tweaksDisabledPathSuffixes) / sizeof(const char*); i++) {
-		if (string_has_suffix(gExecutablePath, tweaksDisabledPathSuffixes[i])) return false;
-	}
-
-	if (__builtin_available(iOS 16.0, *)) {
-		// These seem to be problematic on iOS 16+ (dyld gets stuck in a weird way when opening TweakLoader)
-		const char *iOS16TweaksDisabledPaths[] = {
-			"/usr/libexec/logd",
-			"/usr/sbin/notifyd",
-			"/usr/libexec/usermanagerd",
-		};
-		for (size_t i = 0; i < sizeof(iOS16TweaksDisabledPaths) / sizeof(const char*); i++) {
-			if (!strcmp(gExecutablePath, iOS16TweaksDisabledPaths[i])) return false;
+		// Additional paths for iOS 16+
+		if (__builtin_available(iOS 16.0, *)) {
+			if (!strcmp(gExecutablePath, "/usr/libexec/logd") ||
+				!strcmp(gExecutablePath, "/usr/sbin/notifyd") ||
+				!strcmp(gExecutablePath, "/usr/libexec/usermanagerd")) {
+				return false;
+			}
 		}
-	}
 
-	return true;
+		tweaksEnabled = true;
+	}
+	return tweaksEnabled;
 }
-
-
-#include "envbuf.h"
 
 #define POSIX_SPAWN_PROC_TYPE_DRIVER 0x700
 int posix_spawnattr_getprocesstype_np(const posix_spawnattr_t * __restrict, int * __restrict) __API_AVAILABLE(macos(10.8), ios(6.0));
@@ -315,11 +294,6 @@ int posix_spawn_hook_roothide(pid_t *restrict pidp, const char *restrict path, s
 			return 99;
 		}
 	}
-
-	// on some devices dyldhook may fail due to vm_protect(VM_PROT_READ|VM_PROT_WRITE), 2, (os/kern) protection failure in dsc::__DATA_CONST:__const, 
-	// so we need to disable dyld-in-cache here. (or we can use VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY)
-	char **envc = envbuf_mutcopy((const char **)envp);
-	envbuf_setenv(&envc, "DYLD_IN_CACHE", "0");
 
 	int pid = 0;
 	int ret = posix_spawn_hook_shared(&pid, path, desc, argv, envc, orig, trust_binary, set_process_debugged, jetsamMultiplier);
@@ -401,53 +375,53 @@ int __execve_hook(const char *path, char *const argv[], char *const envp[])
 //some process may be killed by sandbox if call systme getppid()
 pid_t __getppid()
 {
-    struct proc_bsdinfo procInfo;
+	struct proc_bsdinfo procInfo;
 	if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &procInfo, sizeof(procInfo)) <= 0) {
 		return -1;
 	}
-    return procInfo.pbi_ppid;
+	return procInfo.pbi_ppid;
 }
 
 static uid_t _CFGetSVUID(bool *successful) {
-    uid_t uid = -1;
-    struct kinfo_proc kinfo;
-    u_int miblen = 4;
-    size_t  len;
-    int mib[miblen];
-    int ret;
-    mib[0] = CTL_KERN;
-    mib[1] = KERN_PROC;
-    mib[2] = KERN_PROC_PID;
-    mib[3] = getpid();
-    len = sizeof(struct kinfo_proc);
-    ret = sysctl(mib, miblen, &kinfo, &len, NULL, 0);
-    if (ret != 0) {
-        uid = -1;
-        *successful = false;
-    } else {
-        uid = kinfo.kp_eproc.e_pcred.p_svuid;
-        *successful = true;
-    }
-    return uid;
+	uid_t uid = -1;
+	struct kinfo_proc kinfo;
+	u_int miblen = 4;
+	size_t  len;
+	int mib[miblen];
+	int ret;
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC;
+	mib[2] = KERN_PROC_PID;
+	mib[3] = getpid();
+	len = sizeof(struct kinfo_proc);
+	ret = sysctl(mib, miblen, &kinfo, &len, NULL, 0);
+	if (ret != 0) {
+	uid = -1;
+	*successful = false;
+	} else {
+	uid = kinfo.kp_eproc.e_pcred.p_svuid;
+	*successful = true;
+	}
+	return uid;
 }
 
 bool _CFCanChangeEUIDs(void) {
-    static bool canChangeEUIDs;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        uid_t euid = geteuid();
-        uid_t uid = getuid();
-        bool gotSVUID = false;
-        uid_t svuid = _CFGetSVUID(&gotSVUID);
-        canChangeEUIDs = (uid == 0 || uid != euid || svuid != euid || !gotSVUID);
-    });
-    return canChangeEUIDs;
+	static bool canChangeEUIDs;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+	uid_t euid = geteuid();
+	uid_t uid = getuid();
+	bool gotSVUID = false;
+	uid_t svuid = _CFGetSVUID(&gotSVUID);
+	canChangeEUIDs = (uid == 0 || uid != euid || svuid != euid || !gotSVUID);
+	});
+	return canChangeEUIDs;
 }
 
 void loadPathHook()
 {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
 		void* roothidehooks = dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"), RTLD_NOW);
 		void (*pathhook)() = dlsym(roothidehooks, "pathhook");
 		pathhook();
@@ -456,9 +430,9 @@ void loadPathHook()
 
 void redirect_path_env(const char* rootdir)
 {
-    //for now libSystem should be initlized, container should be set.
+	//for now libSystem should be initlized, container should be set.
 
-    char* homedir = NULL;
+	char* homedir = NULL;
 
 /* 
 there is a bug in NSHomeDirectory,
@@ -466,88 +440,88 @@ if a containerized root process changes its uid/gid,
 NSHomeDirectory will return a home directory that it cannot access. (exclude NSTemporaryDirectory)
 We just keep this bug:
 */
-    if(!issetugid()) // issetugid() should always be false at this time. (but how about persona-mgmt? idk)
-    {
-        homedir = getenv("CFFIXED_USER_HOME");
-        if(homedir)
-        {
+	if(!issetugid()) // issetugid() should always be false at this time. (but how about persona-mgmt? idk)
+	{
+	homedir = getenv("CFFIXED_USER_HOME");
+	if(homedir)
+	{
 #define CONTAINER_PATH_PREFIX   "/private/var/mobile/Containers/Data/" // +/Application,PluginKitPlugin,InternalDaemon
-            if(strncmp(homedir, CONTAINER_PATH_PREFIX, sizeof(CONTAINER_PATH_PREFIX)-1) == 0)
-            {
-                return; //containerized
-            }
-            else
-            {
-                homedir = NULL; //from parent, drop it
-            }
-        }
-    }
+		if(strncmp(homedir, CONTAINER_PATH_PREFIX, sizeof(CONTAINER_PATH_PREFIX)-1) == 0)
+		{
+		return; //containerized
+		}
+		else
+		{
+		homedir = NULL; //from parent, drop it
+		}
+	}
+	}
 
-    if(!homedir) {
-        struct passwd* pwd = getpwuid(geteuid());
-        if(pwd && pwd->pw_dir) {
-            homedir = pwd->pw_dir;
-        }
-    }
+	if(!homedir) {
+	struct passwd* pwd = getpwuid(geteuid());
+	if(pwd && pwd->pw_dir) {
+		homedir = pwd->pw_dir;
+	}
+	}
 
-    // if(!homedir) {
-    //     //CFCopyHomeDirectoryURL does, but not for NSHomeDirectory
-    //     homedir = getenv("HOME");
-    // }
+	// if(!homedir) {
+	//	 //CFCopyHomeDirectoryURL does, but not for NSHomeDirectory
+	//	 homedir = getenv("HOME");
+	// }
 
-    if(!homedir) {
-        homedir = "/var/empty";
-    }
+	if(!homedir) {
+	homedir = "/var/empty";
+	}
 
-    char newhome[PATH_MAX]={0};
-    snprintf(newhome,sizeof(newhome),"%s/%s",rootdir,homedir);
-    setenv("CFFIXED_USER_HOME", newhome, 1);
+	char newhome[PATH_MAX]={0};
+	snprintf(newhome,sizeof(newhome),"%s/%s",rootdir,homedir);
+	setenv("CFFIXED_USER_HOME", newhome, 1);
 }
 
 void redirect_paths(const char* rootdir)
 {
-    do {
-        
-        char executablePath[PATH_MAX]={0};
-        uint32_t bufsize=sizeof(executablePath);
-        if(_NSGetExecutablePath(executablePath, &bufsize) != 0)
-            break;
-        
-        char realexepath[PATH_MAX];
-        if(!realpath(executablePath, realexepath))
-            break;
-            
-        char realjbroot[PATH_MAX];
-        if(!realpath(rootdir, realjbroot))
-            break;
-        
-        if(realjbroot[strlen(realjbroot)] != '/')
-            strcat(realjbroot, "/");
-        
-        if(strncmp(realexepath, realjbroot, strlen(realjbroot)) != 0)
-            break;
+	do {
+	
+	char executablePath[PATH_MAX]={0};
+	uint32_t bufsize=sizeof(executablePath);
+	if(_NSGetExecutablePath(executablePath, &bufsize) != 0)
+		break;
+	
+	char realexepath[PATH_MAX];
+	if(!realpath(executablePath, realexepath))
+		break;
+		
+	char realjbroot[PATH_MAX];
+	if(!realpath(rootdir, realjbroot))
+		break;
+	
+	if(realjbroot[strlen(realjbroot)] != '/')
+		strcat(realjbroot, "/");
+	
+	if(strncmp(realexepath, realjbroot, strlen(realjbroot)) != 0)
+		break;
 
-        //for jailbroken binaries
-        redirect_path_env(rootdir);
+	//for jailbroken binaries
+	redirect_path_env(rootdir);
 		
 		if(_CFCanChangeEUIDs()) {
 			loadPathHook();
 		}
-    
-        pid_t ppid = __getppid();
-        assert(ppid > 0);
-        if(ppid != 1)
-            break;
-        
-        char pwd[PATH_MAX];
-        if(getcwd(pwd, sizeof(pwd)) == NULL)
-            break;
-        if(strcmp(pwd, "/") != 0)
-            break;
-    
-        assert(chdir(rootdir)==0);
-        
-    } while(0);
+	
+	pid_t ppid = __getppid();
+	assert(ppid > 0);
+	if(ppid != 1)
+		break;
+	
+	char pwd[PATH_MAX];
+	if(getcwd(pwd, sizeof(pwd)) == NULL)
+		break;
+	if(strcmp(pwd, "/") != 0)
+		break;
+	
+	assert(chdir(rootdir)==0);
+	
+	} while(0);
 }
 
 //export for PatchLoader
@@ -619,7 +593,6 @@ __attribute__((constructor)) static void initializer(void)
 	if(strcmp(DYLD_IN_CACHE, "0") == 0) {
 		unsetenv("DYLD_IN_CACHE");
 	}
-
 	redirect_paths(JB_RootPath);
 
 	dlopen(JBROOT_PATH("/usr/lib/roothideinit.dylib"), RTLD_NOW);
@@ -684,14 +657,9 @@ __attribute__((constructor)) static void initializer(void)
 
 		// Load tweaks if desired
 		// We can hardcode /var/jb here since if it doesn't exist, loading TweakLoader.dylib is not going to work anyways
-		if (should_enable_tweaks()) {
-			const char *tweakLoaderPath = JBROOT_PATH("/usr/lib/TweakLoader.dylib");
-			if(access(tweakLoaderPath, F_OK) == 0) {
-				void *tweakLoaderHandle = dlopen(tweakLoaderPath, RTLD_NOW);
-				if (tweakLoaderHandle != NULL) {
-					dlclose(tweakLoaderHandle);
-				}
-			}
+		const char *tweakLoaderPath = JBROOT_PATH("/usr/lib/TweakLoader.dylib");
+		if (should_enable_tweaks() && access(tweakLoaderPath, F_OK) == 0) {
+			dlopen(tweakLoaderPath, RTLD_NOW);
 		}
 
 #ifndef __arm64e__
