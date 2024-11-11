@@ -358,7 +358,6 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &serverPort);
 	mach_port_insert_right(mach_task_self(), serverPort, serverPort, MACH_MSG_TYPE_MAKE_SEND);
 
-	// Host a boomerang server that will be used by launchdhook to get the jailbreak primitives from this app
 	dispatch_semaphore_t boomerangDone = dispatch_semaphore_create(0);
 	dispatch_source_t serverSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, (uintptr_t)serverPort, 0, dispatch_get_main_queue());
 	dispatch_source_set_event_handler(serverSource, ^{
@@ -371,35 +370,26 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	});
 	dispatch_resume(serverSource);
 
-	// Stash port to server in launchd's initPorts[2]
-	// Since we don't have the neccessary entitlements, we need to do it over jbctl
 	posix_spawnattr_t attr;
 	posix_spawnattr_init(&attr);
 	posix_spawnattr_set_registered_ports_np(&attr, (mach_port_t[]){MACH_PORT_NULL, MACH_PORT_NULL, serverPort}, 3);
 	pid_t spawnedPid = 0;
-	const char *jbctlPath = JBROOT_PATH("/basebin/jbctl");
-	int spawnError = posix_spawn(&spawnedPid, jbctlPath, NULL, &attr, (char *const *)(const char *[]){ jbctlPath, "internal", "launchd_stash_port", NULL }, NULL);
+	int spawnError = posix_spawn(&spawnedPid, JBROOT_PATH("/basebin/jbctl"), NULL, &attr, (char *const[]){ jbctlPath, "internal", "launchd_stash_port", NULL }, NULL);
 	if (spawnError != 0) {
 		dispatch_cancel(serverSource);
 		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Spawning jbctl failed with error code %d", spawnError]}];
 	}
 	posix_spawnattr_destroy(&attr);
-	int status = 0;
-	do {
-		if (waitpid(spawnedPid, &status, 0) == -1) {
-			dispatch_cancel(serverSource);
-			return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : @"Waiting for jbctl failed"}];;
-		}
-	} while (!WIFEXITED(status) && !WIFSIGNALED(status));
 
-	// Inject launchdhook.dylib into launchd via opainject
+	int status = 0;
+	while (waitpid(spawnedPid, &status, 0) != -1 && !WIFEXITED(status) && !WIFSIGNALED(status));
+
 	int r = exec_cmd(JBROOT_PATH("/basebin/opainject"), "1", JBROOT_PATH("/basebin/launchdhook.dylib"), NULL);
 	if (r != 0) {
 		dispatch_cancel(serverSource);
 		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"opainject failed with error code %d", r]}];
 	}
 
-	// Wait for everything to finish
 	dispatch_semaphore_wait(boomerangDone, DISPATCH_TIME_FOREVER);
 	dispatch_cancel(serverSource);
 	mach_port_deallocate(mach_task_self(), serverPort);
