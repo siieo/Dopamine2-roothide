@@ -43,20 +43,20 @@ CFDictionaryRef _CFPreferencesCopyMultipleWithContainer(CFArrayRef keysToFetch, 
 
 NSString *const JBErrorDomain = @"JBErrorDomain";
 typedef NS_ENUM(NSInteger, JBErrorCode) {
-	JBErrorCodeFailedToFindKernel			= -1,
-	JBErrorCodeFailedKernelPatchfinding	  = -2,
-	JBErrorCodeFailedLoadingExploit		  = -3,
-	JBErrorCodeFailedExploitation			= -4,
-	JBErrorCodeFailedBuildingPhysRW		  = -5,
-	JBErrorCodeFailedCleanup				 = -6,
-	JBErrorCodeFailedGetRoot				 = -7,
-	JBErrorCodeFailedUnsandbox			   = -8,
-	JBErrorCodeFailedPlatformize			 = -9,
-	JBErrorCodeFailedBasebinTrustcache	   = -10,
-	JBErrorCodeFailedLaunchdInjection		= -11,
-	JBErrorCodeFailedInitProtection		  = -12,
-	JBErrorCodeFailedInitFakeLib			 = -13,
-	JBErrorCodeFailedDuplicateApps		   = -14,
+	JBErrorCodeFailedToFindKernel		= -1,
+	JBErrorCodeFailedKernelPatchfinding	= -2,
+	JBErrorCodeFailedLoadingExploit		= -3,
+	JBErrorCodeFailedExploitation		= -4,
+	JBErrorCodeFailedBuildingPhysRW		= -5,
+	JBErrorCodeFailedCleanup		= -6,
+	JBErrorCodeFailedGetRoot		= -7,
+	JBErrorCodeFailedUnsandbox		= -8,
+	JBErrorCodeFailedPlatformize		= -9,
+	JBErrorCodeFailedBasebinTrustcache	= -10,
+	JBErrorCodeFailedLaunchdInjection	= -11,
+	JBErrorCodeFailedInitProtection		= -12,
+	JBErrorCodeFailedInitFakeLib		= -13,
+	JBErrorCodeFailedDuplicateApps		= -14,
 };
 
 @implementation DOJailbreaker
@@ -254,24 +254,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 	
 	// FUCKING dirhelper caches the temporary path
 	// So we have to do userland patchfinding to find the fucking string and overwrite it
-	/*char **pain = NULL;
-	uint32_t *dirhelperData = (uint32_t *)_dirhelper;
-	for (int i = 0; i < 100; i++) {
-		arm64_register destinationReg;
-		uint64_t imm = 0;
-		if (arm64_dec_ldr_imm(dirhelperData[i], &destinationReg, NULL, &imm, NULL, NULL) == 0) {
-			if (ARM64_REG_GET_NUM(destinationReg) == 1) {
-				uint32_t *adrpAddr = &dirhelperData[i - 1];
-				uint64_t adrpTarget = 0;
-				uint32_t adrpInst = *adrpAddr;
-				if (arm64_dec_adr_p(adrpInst, (uint64_t)adrpAddr, &adrpTarget, NULL, NULL) == 0) {
-					pain = (char **)(uint64_t)(adrpTarget + imm);
-					break;
-				}
-			}
-		}
-	}
-	*pain = strdup("/var/tmp");*/
 	
 	// Get CS_PLATFORM_BINARY
 	proc_csflags_set(proc, CS_PLATFORM_BINARY);
@@ -302,20 +284,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 	}
 	return nil;
 }
-
-/*
-- (NSError *)loadBasebinTrustcache
-{
-	trustcache_file_v1 *basebinTcFile = NULL;
-	if (trustcache_file_build_from_path([[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"basebin.tc"].fileSystemRepresentation, &basebinTcFile) == 0) {
-		int r = trustcache_file_upload_with_uuid(basebinTcFile, BASEBIN_TRUSTCACHE_UUID);
-		free(basebinTcFile);
-		if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload BaseBin trustcache: %d", r]}];
-		return nil;
-	}
-	return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache userInfo:@{NSLocalizedDescriptionKey : @"Failed to load BaseBin trustcache"}];
-}
-*/
 
 int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 - (NSError *)loadBasebinTrustcache
@@ -403,116 +371,6 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	return nil;
 }
 
-/*
-- (NSError *)applyProtection
-{
-	int r = exec_cmd(JBROOT_PATH("/basebin/jbctl"), "internal", "protection_init", NULL);
-	if (r != 0) {
-		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitProtection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed initializing protection with error: %d", r]}];
-	}
-	return nil;
-}
-
-- (NSError *)createFakeLib
-{
-	int r = exec_cmd(JBROOT_PATH("/basebin/jbctl"), "internal", "fakelib_init", NULL);
-	if (r != 0) {
-		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d", r]}];
-	}
-
-	cdhash_t *cdhashes = NULL;
-	uint32_t cdhashesCount = 0;
-	macho_collect_untrusted_cdhashes(JBROOT_PATH("/basebin/.fakelib/dyld"), NULL, NULL, NULL, NULL, 0, &cdhashes, &cdhashesCount);
-	if (cdhashesCount != 1) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Got unexpected number of cdhashes for dyld???: %d", cdhashesCount]}];
-	
-	trustcache_file_v1 *dyldTCFile = NULL;
-	r = trustcache_file_build_from_cdhashes(cdhashes, cdhashesCount, &dyldTCFile);
-	free(cdhashes);
-	if (r == 0) {
-		int r = trustcache_file_upload_with_uuid(dyldTCFile, DYLD_TRUSTCACHE_UUID);
-		if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload dyld trustcache: %d", r]}];
-		free(dyldTCFile);
-	}
-	else {
-		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : @"Failed to build dyld trustcache"}];
-	}
-	
-	r = exec_cmd(JBROOT_PATH("/basebin/jbctl"), "internal", "fakelib_mount", NULL);
-	if (r != 0) {
-		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Mounting fakelib failed with error: %d", r]}];
-	}
-	
-	// Now that fakelib is up, we want to make systemhook inject into any binary we spawn
-	setenv("DYLD_INSERT_LIBRARIES", "/usr/lib/systemhook.dylib", 1);
-	return nil;
-}
-
-- (NSError *)ensureNoDuplicateApps
-{
-	NSMutableSet *dopamineInstalledAppIds = [NSMutableSet new];
-	NSMutableSet *userInstalledAppIds = [NSMutableSet new];
-	
-	NSString *dopamineAppsPath = JBROOT_PATH(@"/Applications");
-	NSString *userAppsPath = @"/var/containers/Bundle/Application";
-	
-	for (NSString *dopamineAppName in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dopamineAppsPath error:nil]) {
-		NSString *infoPlistPath = [[dopamineAppsPath stringByAppendingPathComponent:dopamineAppName] stringByAppendingPathComponent:@"Info.plist"];
-		NSDictionary *infoDictionary = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
-		NSString *appId = infoDictionary[@"CFBundleIdentifier"];
-		if (appId) {
-			if (![dopamineInstalledAppIds containsObject:appId]) {
-				[dopamineInstalledAppIds addObject:appId];
-			}
-			else {
-				return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Error_Dopamine_App"), appId, dopamineAppsPath]}];
-			}
-		}
-	}
-	
-	for (NSString *appUUID in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:userAppsPath error:nil]) {
-		NSString *UUIDPath = [userAppsPath stringByAppendingPathComponent:appUUID];
-		for (NSString *appCandidate in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:UUIDPath error:nil]) {
-			if ([appCandidate.pathExtension isEqualToString:@"app"]) {
-				NSString *appPath = [UUIDPath stringByAppendingPathComponent:appCandidate];
-				NSString *infoPlistPath = [appPath stringByAppendingPathComponent:@"Info.plist"];
-				NSDictionary *infoDictionary = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
-				NSString *appId = infoDictionary[@"CFBundleIdentifier"];
-				if (appId) {
-					[userInstalledAppIds addObject:appId];
-				}
-			}
-		}
-	}
-	
-	NSMutableSet *duplicateApps = dopamineInstalledAppIds.mutableCopy;
-	[duplicateApps intersectSet:userInstalledAppIds];
-	if (duplicateApps.count) {
-		NSMutableString *duplicateAppsString = [NSMutableString new];
-		[duplicateAppsString appendString:@"["];
-		BOOL isFirst = YES;
-		for (NSString *duplicateApp in duplicateApps) {
-			if (isFirst) isFirst = NO;
-			else [duplicateAppsString appendString:@", "];
-			[duplicateAppsString appendString:duplicateApp];
-		}
-		[duplicateAppsString appendString:@"]"];
-		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Error_User_App"), duplicateAppsString, dopamineAppsPath]}];
-	}
-	
-	for (NSString *dopamineAppId in dopamineInstalledAppIds) {
-		LSApplicationProxy *appProxy = [LSApplicationProxy applicationProxyForIdentifier:dopamineAppId];
-		if (appProxy.installed) {
-			NSString *appProxyPath = [[appProxy.bundleURL.path stringByResolvingSymlinksInPath] stringByStandardizingPath];
-			if (![appProxyPath hasPrefix:dopamineAppsPath]) {
-				return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedDuplicateApps userInfo:@{ NSLocalizedDescriptionKey : [NSString stringWithFormat:DOLocalizedString(@"Duplicate_Apps_Error_Icon_Cache"), dopamineAppId, dopamineAppsPath, appProxy.bundleURL.path]}];
-			}
-		}
-	}
-	
-	return nil;
-}
-*/
-
 - (NSError *)finalizeBootstrapIfNeeded
 {
 	return [[DOEnvironmentManager sharedManager] finalizeBootstrap];
@@ -598,19 +456,6 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	// using the stock path during jailbreaking
 	setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
 	
-/*	
-	// Now that we can, protect important system files by bind mounting on top of them
-	// This will be always be done during the userspace reboot
-	// We also do it now though in case there is a failure between the now step and the userspace reboot
-	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Protection") debug:NO];
-	*errOut = [self applyProtection];
-	if (*errOut) return;
-	
-	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
-	*errOut = [self createFakeLib];
-	if (*errOut) return;
-*/
-	
 	// Unsandbox iconservicesagent so that app icons can work
 	exec_cmd_trusted(JBROOT_PATH("/usr/bin/killall"), "-9", "iconservicesagent", NULL);
 	
@@ -618,15 +463,6 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	if (*errOut) return;
 	
 	[[DOEnvironmentManager sharedManager] setIDownloadEnabled:idownloadEnabled needsUnsandbox:NO];
-	
-/*
-	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Checking For Duplicate Apps") debug:NO];
-	*errOut = [self ensureNoDuplicateApps];
-	if (*errOut) {
-		*showLogs = NO;
-		return;
-	}
-*/
 	
 	//printf("Starting launch daemons...\n");
 	//exec_cmd_trusted(JBROOT_PATH("/usr/bin/launchctl"), "bootstrap", "system", JBROOT_PATH("/Library/LaunchDaemons"), NULL);
