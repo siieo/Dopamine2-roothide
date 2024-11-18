@@ -65,144 +65,85 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 
 - (NSError *)decompressZstd:(NSString *)zstdPath toTar:(NSString *)tarPath
 {
-	// Open the input file for reading
+	// Helper method to cleanup resources on error
+	void (^cleanup)(FILE *, FILE *, ZSTD_DCtx *, ZSTD_DStream *, uint8_t *, uint8_t *) = ^(FILE *input_file, FILE *output_file, ZSTD_DCtx *dctx, ZSTD_DStream *dstream, uint8_t *input_buffer, uint8_t *output_buffer) {
+		if (input_file) fclose(input_file);
+		if (output_file) fclose(output_file);
+		if (dctx) ZSTD_freeDCtx(dctx);
+		if (dstream) ZSTD_freeDStream(dstream);
+		if (input_buffer) free(input_buffer);
+		if (output_buffer) free(output_buffer);
+	};
+
+	// Open the input and output files
 	FILE *input_file = fopen(zstdPath.fileSystemRepresentation, "rb");
-	if (input_file == NULL) {
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to open input file %@: %s", zstdPath, strerror(errno)]}];
+	if (!input_file) {
+		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to open input file %@: %s", zstdPath, strerror(errno)]}];
 	}
 
-	// Open the output file for writing
 	FILE *output_file = fopen(tarPath.fileSystemRepresentation, "wb");
-	if (output_file == NULL) {
-	fclose(input_file);
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to open output file %@: %s", tarPath, strerror(errno)]}];
+	if (!output_file) {
+		cleanup(input_file, NULL, NULL, NULL, NULL, NULL);
+		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to open output file %@: %s", tarPath, strerror(errno)]}];
 	}
 
-	// Create a ZSTD decompression context
+	// Create ZSTD decompression context and buffers
 	ZSTD_DCtx *dctx = ZSTD_createDCtx();
-	if (dctx == NULL) {
-	fclose(input_file);
-	fclose(output_file);
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : @"Failed to create ZSTD decompression context"}];
-	}
-
-	// Create a buffer for reading input data
-	uint8_t *input_buffer = (uint8_t *) malloc(BUFFER_SIZE);
-	if (input_buffer == NULL) {
-	ZSTD_freeDCtx(dctx);
-	fclose(input_file);
-	fclose(output_file);
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : @"Failed to allocate input buffer"}];
-	}
-
-	// Create a buffer for writing output data
-	uint8_t *output_buffer = (uint8_t *) malloc(BUFFER_SIZE);
-	if (output_buffer == NULL) {
-	free(input_buffer);
-	ZSTD_freeDCtx(dctx);
-	fclose(input_file);
-	fclose(output_file);
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : @"Failed to allocate output buffer"}];
-	}
-
-	// Create a ZSTD decompression stream
-	ZSTD_inBuffer in = {0};
-	ZSTD_outBuffer out = {0};
 	ZSTD_DStream *dstream = ZSTD_createDStream();
-	if (dstream == NULL) {
-	free(output_buffer);
-	free(input_buffer);
-	ZSTD_freeDCtx(dctx);
-	fclose(input_file);
-	fclose(output_file);
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : @"Failed to create ZSTD decompression stream"}];
+	uint8_t *input_buffer = malloc(BUFFER_SIZE);
+	uint8_t *output_buffer = malloc(BUFFER_SIZE);
+
+	if (!dctx || !dstream || !input_buffer || !output_buffer) {
+		cleanup(input_file, output_file, dctx, dstream, input_buffer, output_buffer);
+		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : @"Failed to allocate memory or create decompression context"}];
 	}
 
-	// Initialize the ZSTD decompression stream
+	// Initialize the decompression stream
 	size_t ret = ZSTD_initDStream(dstream);
 	if (ZSTD_isError(ret)) {
-	ZSTD_freeDStream(dstream);
-	free(output_buffer);
-	free(input_buffer);
-	ZSTD_freeDCtx(dctx);
-	fclose(input_file);
-	fclose(output_file);
-	return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to initialize ZSTD decompression stream: %s", ZSTD_getErrorName(ret)]}];
+		cleanup(input_file, output_file, dctx, dstream, input_buffer, output_buffer);
+		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to initialize decompression stream: %s", ZSTD_getErrorName(ret)]}];
 	}
-	
-	// Read and decompress the input file
-	size_t total_bytes_read = 0;
+
+	// Read and decompress data
 	size_t total_bytes_written = 0;
-	size_t bytes_read;
-	size_t bytes_written;
+	ZSTD_inBuffer in = {0};
+	ZSTD_outBuffer out = {0};
+	out.dst = output_buffer;
+	out.size = BUFFER_SIZE;
+
 	while (1) {
-	// Read input data into the input buffer
-	bytes_read = fread(input_buffer, 1, BUFFER_SIZE, input_file);
-	if (bytes_read == 0) {
-		if (feof(input_file)) {
-		// End of input file reached, break out of loop
-		break;
-		} else {
-		ZSTD_freeDStream(dstream);
-		free(output_buffer);
-		free(input_buffer);
-		ZSTD_freeDCtx(dctx);
-		fclose(input_file);
-		fclose(output_file);
-		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to read input file: %s", strerror(errno)]}];
+		// Read data into input buffer
+		in.size = fread(input_buffer, 1, BUFFER_SIZE, input_file);
+		if (in.size == 0) break;
+		
+		in.src = input_buffer;
+		in.pos = 0;
+
+		while (in.pos < in.size) {
+			out.pos = 0;
+			ret = ZSTD_decompressStream(dstream, &out, &in);
+			if (ZSTD_isError(ret)) {
+				cleanup(input_file, output_file, dctx, dstream, input_buffer, output_buffer);
+				return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Decompression failed: %s", ZSTD_getErrorName(ret)]}];
+			}
+
+			// Write decompressed data
+			size_t bytes_written = fwrite(output_buffer, 1, out.pos, output_file);
+			if (bytes_written != out.pos) {
+				cleanup(input_file, output_file, dctx, dstream, input_buffer, output_buffer);
+				return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to write output file: %s", strerror(errno)]}];
+			}
+
+			total_bytes_written += bytes_written;
 		}
 	}
 
-	in.src = input_buffer;
-	in.size = bytes_read;
-	in.pos = 0;
-
-	while (in.pos < in.size) {
-		// Initialize the output buffer
-		out.dst = output_buffer;
-		out.size = BUFFER_SIZE;
-		out.pos = 0;
-
-		// Decompress the input data
-		ret = ZSTD_decompressStream(dstream, &out, &in);
-		if (ZSTD_isError(ret)) {
-		ZSTD_freeDStream(dstream);
-		free(output_buffer);
-		free(input_buffer);
-		ZSTD_freeDCtx(dctx);
-		fclose(input_file);
-		fclose(output_file);
-		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to decompress input data: %s", ZSTD_getErrorName(ret)]}];
-		}
-
-		// Write the decompressed data to the output file
-		bytes_written = fwrite(output_buffer, 1, out.pos, output_file);
-		if (bytes_written != out.pos) {
-		ZSTD_freeDStream(dstream);
-		free(output_buffer);
-		free(input_buffer);
-		ZSTD_freeDCtx(dctx);
-		fclose(input_file);
-		fclose(output_file);
-		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedDecompressing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to write output file: %s", strerror(errno)]}];
-		}
-
-		total_bytes_written += bytes_written;
-	}
-
-	total_bytes_read += bytes_read;
-	}
-
-	// Clean up resources
-	ZSTD_freeDStream(dstream);
-	free(output_buffer);
-	free(input_buffer);
-	ZSTD_freeDCtx(dctx);
-	fclose(input_file);
-	fclose(output_file);
-
+	// Cleanup and return success
+	cleanup(input_file, output_file, dctx, dstream, input_buffer, output_buffer);
 	return nil;
 }
+
 
 - (NSError *)extractTar:(NSString *)tarPath toPath:(NSString *)destinationPath
 {
