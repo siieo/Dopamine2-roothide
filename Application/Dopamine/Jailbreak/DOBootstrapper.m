@@ -237,165 +237,122 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 {
 	[[DOUIManager sharedInstance] sendLog:@"Updating BaseBin" debug:NO];
 
-	// Ensure /private/preboot is mounted writable (Not writable by default on iOS <=15)
+	// Ensure /private/preboot is writable (iOS <= 15)
 	NSError *error = [self ensurePrivatePrebootIsWritable];
-	if (error) {
-	completion(error);
-	return;
-	}
-	
+	if (error) return completion(error);
+
 	[self fixupPathPermissions];
-	
-	// Remove /var/jb as it might be wrong
-	if (![self deleteSymlinkAtPath:@"/var/jb" error:&error]) {
-	if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
-		if (![[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:&error]) {
-		completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Removing /var/jb directory failed with error: %@", error]}]);
-		return;
-		}
+
+	// Safely handle /var/jb symlink removal
+	error = [self removeSymlinkAtPath:@"/var/jb"];
+	if (error) return completion(error);
+
+	// Clean up xinaA15 leftovers if necessary
+	if (![self cleanupXinaA15Files]) {
+		return completion([NSError errorWithDomain:bootstrapErrorDomain
+											   code:BootstrapErrorCodeFailedReplacing
+										   userInfo:@{NSLocalizedDescriptionKey : @"Failed to clean up xinaA15 files"}]);
 	}
-	else {
-		completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedReplacing userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Removing /var/jb symlink failed with error: %@", error]}]);
-		return;
-	}
-	}
-	
-	// Clean up xinaA15 v1 leftovers if desired
-	if (![[NSFileManager defaultManager] fileExistsAtPath:@"/var/.keep_symlinks"]) {
-	NSArray *xinaLeftoverSymlinks = @[
-		@"/var/alternatives",
-		@"/var/ap",
-		@"/var/apt",
-		@"/var/bin",
-		@"/var/bzip2",
-		@"/var/cache",
-		@"/var/dpkg",
-		@"/var/etc",
-		@"/var/gzip",
-		@"/var/lib",
-		@"/var/Lib",
-		@"/var/libexec",
-		@"/var/Library",
-		@"/var/LIY",
-		@"/var/Liy",
-		@"/var/local",
-		@"/var/newuser",
-		@"/var/profile",
-		@"/var/sbin",
-		@"/var/suid_profile",
-		@"/var/sh",
-		@"/var/sy",
-		@"/var/share",
-		@"/var/ssh",
-		@"/var/sudo_logsrvd.conf",
-		@"/var/suid_profile",
-		@"/var/sy",
-		@"/var/usr",
-		@"/var/zlogin",
-		@"/var/zlogout",
-		@"/var/zprofile",
-		@"/var/zshenv",
-		@"/var/zshrc",
-		@"/var/log/dpkg",
-		@"/var/log/apt",
-	];
-	NSArray *xinaLeftoverFiles = @[
-		@"/var/lib",
-		@"/var/master.passwd"
-	];
-	
-	for (NSString *xinaLeftoverSymlink in xinaLeftoverSymlinks) {
-		[self deleteSymlinkAtPath:xinaLeftoverSymlink error:nil];
-	}
-	
-	for (NSString *xinaLeftoverFile in xinaLeftoverFiles) {
-		if ([[NSFileManager defaultManager] fileExistsAtPath:xinaLeftoverFile]) {
-		[[NSFileManager defaultManager] removeItemAtPath:xinaLeftoverFile error:nil];
-		}
-	}
-	}
-	
+
+	// Create symlink and handle basebin extraction
+	error = [self createSymlinkAtPath:@"/var/jb" toPath:JBROOT_PATH(@"/")];
+	if (error) return completion(error);
+
 	NSString *basebinPath = JBROOT_PATH(@"/basebin");
-	NSString *installedPath = JBROOT_PATH(@"/.installed_dopamine");
-	error = [self createSymlinkAtPath:@"/var/jb" toPath:JBROOT_PATH(@"/") createIntermediateDirectories:YES];
-	if (error) {
-	completion(error);
-	return;
-	}
-	
 	if ([[NSFileManager defaultManager] fileExistsAtPath:basebinPath]) {
-	if (![[NSFileManager defaultManager] removeItemAtPath:basebinPath error:&error]) {
-		completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedExtracting userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed deleting existing basebin file with error: %@", error.localizedDescription]}]);
-		return;
+		error = [self removeItemAtPath:basebinPath];
+		if (error) return completion(error);
 	}
-	}
+
 	error = [self extractTar:[[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"basebin.tar"] toPath:JBROOT_PATH(@"/")];
-	if (error) {
-	completion(error);
-	return;
-	}
+	if (error) return completion(error);
+
 	[self patchBasebinDaemonPlists];
 	[[NSFileManager defaultManager] removeItemAtPath:JBROOT_PATH(@"/basebin/basebin.tc") error:nil];
-	
-	void (^bootstrapFinishedCompletion)(NSError *) = ^(NSError *error){
-	if (error) {
-		completion(error);
-		return;
+
+	// Write default sources and create preferences directory
+	[self writeDefaultSources];
+	[self createPreferencesDirectoryIfNeeded];
+
+	JBFixMobilePermissions();
+	completion(nil);
+}
+
+- (NSError *)removeSymlinkAtPath:(NSString *)path
+{
+	NSError *error = nil;
+	if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+		if (![self deleteSymlinkAtPath:path error:&error]) {
+			return error;
+		}
 	}
-	
+	return nil;
+}
+
+- (BOOL)cleanupXinaA15Files
+{
+	if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/.keep_symlinks"]) return YES;
+
+	NSArray *xinaLeftoverSymlinks = @[
+		@"/var/alternatives", @"/var/ap", @"/var/apt", @"/var/bin", @"/var/bzip2", @"/var/cache", 
+		@"/var/dpkg", @"/var/etc", @"/var/gzip", @"/var/lib", @"/var/Lib", @"/var/libexec", 
+		@"/var/Library", @"/var/LIY", @"/var/Liy", @"/var/local", @"/var/newuser", @"/var/profile", 
+		@"/var/sbin", @"/var/suid_profile", @"/var/sh", @"/var/sy", @"/var/share", @"/var/ssh", 
+		@"/var/sudo_logsrvd.conf", @"/var/suid_profile", @"/var/sy", @"/var/usr", @"/var/zlogin", 
+		@"/var/zlogout", @"/var/zprofile", @"/var/zshenv", @"/var/zshrc", @"/var/log/dpkg", @"/var/log/apt"
+	];
+
+	NSArray *xinaLeftoverFiles = @[
+		@"/var/master.passwd"
+	];
+
+	for (NSString *symlink in xinaLeftoverSymlinks) {
+		[self deleteSymlinkAtPath:symlink error:nil];
+	}
+
+	for (NSString *file in xinaLeftoverFiles) {
+		if ([[NSFileManager defaultManager] fileExistsAtPath:file]) {
+			[[NSFileManager defaultManager] removeItemAtPath:file error:nil];
+		}
+	}
+
+	return YES;
+}
+
+- (void)writeDefaultSources
+{
 	NSString *defaultSources = @"Types: deb\n"
-		@"URIs: https://repo.chariz.com/\n"
-		@"Suites: ./\n"
-		@"Components:\n"
-		@"\n"
-		@"Types: deb\n"
-		@"URIs: https://havoc.app/\n"
-		@"Suites: ./\n"
-		@"Components:\n"
-		@"\n"
-		@"Types: deb\n"
-		@"URIs: http://apt.thebigboss.org/repofiles/cydia/\n"
-		@"Suites: stable\n"
-		@"Components: main\n"
-		@"\n"
-		@"Types: deb\n"
-		@"URIs: https://ellekit.space/\n"
-		@"Suites: ./\n"
-		@"Components:\n";
+	@"URIs: https://repo.chariz.com/\n"
+	@"Suites: ./\n"
+	@"Components:\n"
+	@"\n"
+	@"Types: deb\n"
+	@"URIs: https://havoc.app/\n"
+	@"Suites: ./\n"
+	@"Components:\n"
+	@"\n"
+	@"Types: deb\n"
+	@"URIs: http://apt.thebigboss.org/repofiles/cydia/\n"
+	@"Suites: stable\n"
+	@"Components: main\n"
+	@"\n"
+	@"Types: deb\n"
+	@"URIs: https://ellekit.space/\n"
+	@"Suites: ./\n"
+	@"Components:\n";
 	[defaultSources writeToFile:JBROOT_PATH(@"/etc/apt/sources.list.d/default.sources") atomically:NO encoding:NSUTF8StringEncoding error:nil];
-	
+}
+
+- (void)createPreferencesDirectoryIfNeeded
+{
 	NSString *mobilePreferencesPath = JBROOT_PATH(@"/var/mobile/Library/Preferences");
 	if (![[NSFileManager defaultManager] fileExistsAtPath:mobilePreferencesPath]) {
 		NSDictionary<NSFileAttributeKey, id> *attributes = @{
-		NSFilePosixPermissions : @0755,
-		NSFileOwnerAccountID : @501,
-		NSFileGroupOwnerAccountID : @501,
+			NSFilePosixPermissions : @0755,
+			NSFileOwnerAccountID : @501,
+			NSFileGroupOwnerAccountID : @501,
 		};
 		[[NSFileManager defaultManager] createDirectoryAtPath:mobilePreferencesPath withIntermediateDirectories:YES attributes:attributes error:nil];
-	}
-	
-	JBFixMobilePermissions();
-
-	completion(nil);
-	};
-	
-	
-	BOOL needsBootstrap = ![[NSFileManager defaultManager] fileExistsAtPath:installedPath];
-	if (needsBootstrap) {
-	// First, wipe any existing content that's not basebin
-	for (NSURL *subItemURL in [[NSFileManager defaultManager] contentsOfDirectoryAtURL:[NSURL fileURLWithPath:JBROOT_PATH(@"/")] includingPropertiesForKeys:nil options:0 error:nil]) {
-		if (![subItemURL.lastPathComponent isEqualToString:@"basebin"]) {
-		[[NSFileManager defaultManager] removeItemAtURL:subItemURL error:nil];
-		}
-	}
-	
-	[[DOUIManager sharedInstance] sendLog:@"Extracting Bootstrap" debug:NO];
-
-	NSString *bootstrapZstdPath = [NSString stringWithFormat:@"%@/bootstrap_%@.tar.zst", [NSBundle mainBundle].bundlePath, [self bootstrapVersion]];
-	[self extractBootstrap:bootstrapZstdPath withCompletion:bootstrapFinishedCompletion];
-	}
-	else {
-	bootstrapFinishedCompletion(nil);
 	}
 }
 #endif
@@ -588,11 +545,6 @@ NSString* rootfsPrefix(NSString* path)
 #define ASSERT(...)	 do{if(!(__VA_ARGS__)) {completion([NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedExtracting userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"ABORT: %s (%d): %s", __FILE_NAME__, __LINE__, #__VA_ARGS__]}]);return -1;}} while(0)
 
 #define DEFAULT_SOURCES "\
-Types: deb\n\
-URIs: https://yourepo.com/\n\
-Suites: ./\n\
-Components:\n\
-\n\
 Types: deb\n\
 URIs: https://repo.chariz.com/\n\
 Suites: ./\n\
