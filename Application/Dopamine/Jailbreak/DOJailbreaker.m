@@ -236,8 +236,8 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 
 	if (getuid() != 0 || getgid() != 0) {
 		return [NSError errorWithDomain:JBErrorDomain 
-								   code:JBErrorCodeFailedGetRoot 
-							   userInfo:@{NSLocalizedDescriptionKey:
+								code:JBErrorCodeFailedGetRoot 
+							userInfo:@{NSLocalizedDescriptionKey:
 											 [NSString stringWithFormat:@"Failed to get root, uid/gid: %d/%d", getuid(), getgid()]}];
 	}
 
@@ -248,8 +248,8 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 	[[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var" error:&error];
 	if (error) {
 		return [NSError errorWithDomain:JBErrorDomain 
-								   code:JBErrorCodeFailedUnsandbox 
-							   userInfo:@{NSLocalizedDescriptionKey:
+								code:JBErrorCodeFailedUnsandbox 
+							userInfo:@{NSLocalizedDescriptionKey:
 											 [NSString stringWithFormat:@"Failed to unsandbox, /var not accessible (%@)", error.localizedDescription]}];
 	}
 
@@ -264,8 +264,8 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 	csops(getpid(), CS_OPS_STATUS, &csflags, sizeof(csflags));
 	if (!(csflags & CS_PLATFORM_BINARY)) {
 		return [NSError errorWithDomain:JBErrorDomain 
-								   code:JBErrorCodeFailedPlatformize 
-							   userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
+								code:JBErrorCodeFailedPlatformize 
+							userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
 	}
 
 	return nil;
