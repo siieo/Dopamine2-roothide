@@ -425,52 +425,6 @@ int reboot3(uint64_t flags, ...);
     }
 }
 
-/*
-- (BOOL)isJailbreakHidden
-{
-    return ![[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"];
-}
-
-- (void)setJailbreakHidden:(BOOL)hidden
-{
-    if (hidden && ![self isJailbroken] && geteuid() != 0) {
-        [self runTrollStoreAction:@"hide-jailbreak"];
-        return;
-    }
-    
-    void (^actionBlock)(void) = ^{
-        BOOL alreadyHidden = [self isJailbreakHidden];
-        if (hidden != alreadyHidden) {
-            if (hidden) {
-                if ([self isJailbroken]) {
-                    [self unregisterJailbreakApps];
-                    [[NSFileManager defaultManager] removeItemAtPath:JBROOT_PATH(@"/basebin/.fakelib/systemhook.dylib") error:nil];
-                    carbonCopy(JBROOT_PATH(@"/basebin/.dyld.orig"), JBROOT_PATH(@"/basebin/.fakelib/dyld"));
-                }
-                [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
-            }
-            else {
-                [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:JBROOT_PATH(@"/") error:nil];
-                if ([self isJailbroken]) {
-                    carbonCopy(JBROOT_PATH(@"/basebin/.dyld.patched"), JBROOT_PATH(@"/basebin/.fakelib/dyld"));
-                    carbonCopy(JBROOT_PATH(@"/basebin/systemhook.dylib"), JBROOT_PATH(@"/basebin/.fakelib/systemhook.dylib"));
-                    [self refreshJailbreakApps];
-                }
-            }
-        }
-    };
-    
-    if ([self isJailbroken]) {
-        [self runAsRoot:^{
-            [self runUnsandboxed:actionBlock];
-        }];
-    }
-    else {
-        actionBlock();
-    }
-}
-*/
-
 - (NSString *)accessibleKernelPath
 {
     if ([self isInstalledThroughTrollStore]) {
