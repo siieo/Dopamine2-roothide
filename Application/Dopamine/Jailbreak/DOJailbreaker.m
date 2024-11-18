@@ -219,48 +219,55 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 {
 	uint64_t proc = proc_self();
 	uint64_t ucred = proc_ucred(proc);
-	
-	// Get uid 0
+
+	// Set UID and GID to 0
 	kwrite32(proc + koffsetof(proc, svuid), 0);
 	kwrite32(ucred + koffsetof(ucred, svuid), 0);
 	kwrite32(ucred + koffsetof(ucred, ruid), 0);
 	kwrite32(ucred + koffsetof(ucred, uid), 0);
-	
-	// Get gid 0
 	kwrite32(proc + koffsetof(proc, svgid), 0);
 	kwrite32(ucred + koffsetof(ucred, rgid), 0);
 	kwrite32(ucred + koffsetof(ucred, svgid), 0);
 	kwrite32(ucred + koffsetof(ucred, groups), 0);
-	
-	// Add P_SUGID
+
+	// Modify flags to remove P_SUGID
 	uint32_t flag = kread32(proc + koffsetof(proc, flag));
-	if ((flag & P_SUGID) != 0) {
-		flag &= P_SUGID;
-		kwrite32(proc + koffsetof(proc, flag), flag);
+	kwrite32(proc + koffsetof(proc, flag), flag & ~P_SUGID);
+
+	if (getuid() != 0 || getgid() != 0) {
+		return [NSError errorWithDomain:JBErrorDomain 
+								   code:JBErrorCodeFailedGetRoot 
+							   userInfo:@{NSLocalizedDescriptionKey:
+											 [NSString stringWithFormat:@"Failed to get root, uid/gid: %d/%d", getuid(), getgid()]}];
 	}
-	
-	if (getuid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, uid still %d", getuid()]}];
-	if (getgid() != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedGetRoot userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to get root, gid still %d", getgid()]}];
-	
-	// Unsandbox
+
+	// Unsandbox process
 	uint64_t label = kread_ptr(ucred + koffsetof(ucred, label));
 	mac_label_set(label, 1, -1);
 	NSError *error = nil;
 	[[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var" error:&error];
-	if (error) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedUnsandbox userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"Failed to unsandbox, /var does not seem accessible (%s)", error.description.UTF8String]}];
-	setenv("HOME", "/var/root", true);
-	setenv("CFFIXED_USER_HOME", "/var/root", true);
-	setenv("TMPDIR", "/var/tmp", true);
-	
-	// FUCKING dirhelper caches the temporary path
-	// So we have to do userland patchfinding to find the fucking string and overwrite it
-	
-	// Get CS_PLATFORM_BINARY
+	if (error) {
+		return [NSError errorWithDomain:JBErrorDomain 
+								   code:JBErrorCodeFailedUnsandbox 
+							   userInfo:@{NSLocalizedDescriptionKey:
+											 [NSString stringWithFormat:@"Failed to unsandbox, /var not accessible (%@)", error.localizedDescription]}];
+	}
+
+	// Set environment variables
+	setenv("HOME", "/var/root", 1);
+	setenv("CFFIXED_USER_HOME", "/var/root", 1);
+	setenv("TMPDIR", "/var/tmp", 1);
+
+	// Get CS_PLATFORM_BINARY status
 	proc_csflags_set(proc, CS_PLATFORM_BINARY);
 	uint32_t csflags;
 	csops(getpid(), CS_OPS_STATUS, &csflags, sizeof(csflags));
-	if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
-	
+	if (!(csflags & CS_PLATFORM_BINARY)) {
+		return [NSError errorWithDomain:JBErrorDomain 
+								   code:JBErrorCodeFailedPlatformize 
+							   userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
+	}
+
 	return nil;
 }
 
