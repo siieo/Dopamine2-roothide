@@ -59,8 +59,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 {
 	self = [super init];
 	if (self) {
-	/*NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:@"com.opa334.bootstrapper.background-session"];
-	_urlSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];*/
 	}
 	return self;
 }
@@ -252,67 +250,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 	return error;
 }
 
-/*
-- (BOOL)isPrivatePrebootMountedWritable
-{
-	struct statfs ppStfs;
-	statfs("/private/preboot", &ppStfs);
-	return !(ppStfs.f_flags & MNT_RDONLY);
-}
-
-- (int)remountPrivatePrebootWritable:(BOOL)writable
-{
-	struct statfs ppStfs;
-	int r = statfs("/private/preboot", &ppStfs);
-	if (r != 0) return r;
-	
-	uint32_t flags = MNT_UPDATE;
-	if (!writable) {
-	flags |= MNT_RDONLY;
-	}
-	struct hfs_mount_args mntargs =
-	{
-	.fspec = ppStfs.f_mntfromname,
-	.hfs_mask = 0,
-	};
-	return mount("apfs", "/private/preboot", flags, &mntargs);
-}
-
-- (NSError *)ensurePrivatePrebootIsWritable
-{
-	if (![self isPrivatePrebootMountedWritable]) {
-	int r = [self remountPrivatePrebootWritable:YES];
-	if (r != 0) {
-		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedRemount userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Remounting /private/preboot as writable failed with error: %s", strerror(errno)]}];
-	}
-	}
-	return nil;
-}
-
-- (void)fixupPathPermissions
-{
-	// Ensure the following paths are owned by root:wheel and have permissions of 755:
-	// /private
-	// /private/preboot
-	// /private/preboot/UUID
-	// /private/preboot/UUID/dopamine-<UUID>
-	// /private/preboot/UUID/dopamine-<UUID>/procursus
-
-	NSString *tmpPath = JBROOT_PATH(@"/");
-	while (![tmpPath isEqualToString:@"/"]) {
-	struct stat s;
-	stat(tmpPath.fileSystemRepresentation, &s);
-	if (s.st_uid != 0 || s.st_gid != 0) {
-		chown(tmpPath.fileSystemRepresentation, 0, 0);
-	}
-	if ((s.st_mode & S_IRWXU) != 0755) {
-		chmod(tmpPath.fileSystemRepresentation, 0755);
-	}
-	tmpPath = [tmpPath stringByDeletingLastPathComponent];
-	}
-}
-*/
-
 - (void)patchBasebinDaemonPlist:(NSString *)plistPath
 {
 	NSMutableDictionary *plistDict = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
@@ -353,47 +290,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 {
 	return [NSURL URLWithString:[NSString stringWithFormat:@"https://apt.procurs.us/bootstraps/%@/bootstrap-ssh-iphoneos-arm64.tar.zst", [self bootstrapVersion]]];
 }
-
-/*- (void)downloadBootstrapWithCompletion:(void (^)(NSString *path, NSError *error))completion
-{
-	NSURL *bootstrapURL = [self bootstrapURL];
-	if (!bootstrapURL) {
-	completion(nil, [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedToGetURL userInfo:@{NSLocalizedDescriptionKey : @"Failed to obtain bootstrap URL"}]);
-	return;
-	}
-	
-	_downloadCompletionBlock = ^(NSURL * _Nullable location, NSError * _Nullable error) {
-	NSError *ourError;
-	if (error) {
-		ourError = [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedToDownload userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to download bootstrap: %@", error.localizedDescription]}];
-	}
-	completion(location.path, ourError);
-	};
-	
-	_bootstrapDownloadTask = [_urlSession downloadTaskWithURL:bootstrapURL];
-	[_bootstrapDownloadTask resume];
-}*/
-
-/*
-- (void)extractBootstrap:(NSString *)path withCompletion:(void (^)(NSError *))completion
-{
-	NSString *bootstrapTar = [@"/var/tmp" stringByAppendingPathComponent:@"bootstrap.tar"];
-	NSError *decompressionError = [self decompressZstd:path toTar:bootstrapTar];
-	if (decompressionError) {
-	completion(decompressionError);
-	return;
-	}
-	
-	decompressionError = [self extractTar:bootstrapTar toPath:@"/"];
-	if (decompressionError) {
-	completion(decompressionError);
-	return;
-	}
-	
-	[[NSData data] writeToFile:JBROOT_PATH(@"/.installed_dopamine") atomically:YES];
-	completion(nil);
-}
-*/
 
 #if 0
 - (void)prepareBootstrapWithCompletion:(void (^)(NSError *))completion
@@ -552,32 +448,10 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 		}
 	}
 	
-	/*void (^bootstrapDownloadCompletion)(NSString *, NSError *) = ^(NSString *path, NSError *error) {
-		if (error) {
-		completion(error);
-		return;
-		}
-		[self extractBootstrap:path withCompletion:bootstrapFinishedCompletion];
-	};*/
-	
 	[[DOUIManager sharedInstance] sendLog:@"Extracting Bootstrap" debug:NO];
 
 	NSString *bootstrapZstdPath = [NSString stringWithFormat:@"%@/bootstrap_%@.tar.zst", [NSBundle mainBundle].bundlePath, [self bootstrapVersion]];
 	[self extractBootstrap:bootstrapZstdPath withCompletion:bootstrapFinishedCompletion];
-
-	/*NSString *documentsCandidate = @"/var/mobile/Documents/bootstrap.tar.zstd";
-	NSString *bundleCandidate = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"bootstrap.tar.zstd"];
-	// Check if the user provided a bootstrap
-	if ([[NSFileManager defaultManager] fileExistsAtPath:documentsCandidate]) {
-		bootstrapDownloadCompletion(documentsCandidate, nil);
-	}
-	else if ([[NSFileManager defaultManager] fileExistsAtPath:bundleCandidate]) {
-		bootstrapDownloadCompletion(bundleCandidate, nil);
-	}
-	else {
-		[[DOUIManager sharedInstance] sendLog:@"Downloading Bootstrap" debug:NO];
-		[self downloadBootstrapWithCompletion:bootstrapDownloadCompletion];
-	}*/
 	}
 	else {
 	bootstrapFinishedCompletion(nil);
@@ -646,78 +520,6 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 	
 	return [installedVersion numericalVersionRepresentation] < [bundledVersion numericalVersionRepresentation];
 }
-
-/*
-- (NSError *)finalizeBootstrap
-{
-	// Initial setup on first jailbreak
-	if ([[NSFileManager defaultManager] fileExistsAtPath:JBROOT_PATH(@"/prep_bootstrap.sh")]) {
-	[[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
-	int r = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), JBROOT_PATH("/prep_bootstrap.sh"), NULL);
-	if (r != 0) {
-		return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"prep_bootstrap.sh returned %d\n", r]}];
-	}
-	
-	NSError *error = [self installPackageManagers];
-	if (error) return error;
-	}
-	
-	BOOL shouldInstallLibroot = [self shouldInstallPackage:@"libroot-dopamine"];
-	BOOL shouldInstallLibkrw = [self shouldInstallPackage:@"libkrw0-dopamine"];
-	BOOL shouldInstallBasebinLink = [self shouldInstallPackage:@"dopamine-basebin-link"];
-	
-	if (shouldInstallLibroot || shouldInstallLibkrw || shouldInstallBasebinLink) {
-	[[DOUIManager sharedInstance] sendLog:@"Updating Bundled Packages" debug:NO];
-	if (shouldInstallLibroot) {
-		NSString *librootPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"libroot.deb"];
-		int r = [self installPackage:librootPath];
-		if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install libroot: %d\n", r]}];
-	}
-	
-	if (shouldInstallLibkrw) {
-		NSString *libkrwPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"libkrw-dopamine.deb"];
-		int r = [self installPackage:libkrwPath];
-		if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install the libkrw plugin: %d\n", r]}];
-	}
-	
-	if (shouldInstallBasebinLink) {
-		// Clean symlinks from earlier Dopamine versions
-		if (![self fileOrSymlinkExistsAtPath:JBROOT_PATH(@"/usr/bin/opainject")]) {
-		[[NSFileManager defaultManager] removeItemAtPath:JBROOT_PATH(@"/usr/bin/opainject") error:nil];
-		}
-		if (![self fileOrSymlinkExistsAtPath:JBROOT_PATH(@"/usr/bin/jbctl")]) {
-		[[NSFileManager defaultManager] removeItemAtPath:JBROOT_PATH(@"/usr/bin/jbctl") error:nil];
-		}
-		if (![self fileOrSymlinkExistsAtPath:JBROOT_PATH(@"/usr/lib/libjailbreak.dylib")]) {
-		[[NSFileManager defaultManager] removeItemAtPath:JBROOT_PATH(@"/usr/lib/libjailbreak.dylib") error:nil];
-		}
-		if (![self fileOrSymlinkExistsAtPath:JBROOT_PATH(@"/usr/bin/libjailbreak.dylib")]) {
-		// Yes this exists >.< was a typo
-		[[NSFileManager defaultManager] removeItemAtPath:JBROOT_PATH(@"/usr/bin/libjailbreak.dylib") error:nil];
-		}
-		
-		NSString *basebinLinkPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"basebin-link.deb"];
-		int r = [self installPackage:basebinLinkPath];
-		if (r != 0) return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to install basebin link: %d\n", r]}];
-	}
-	}
-
-	return nil;
-}
-*/
-
-/*
-- (NSError *)deleteBootstrap
-{
-	NSError *error = [self ensurePrivatePrebootIsWritable];
-	if (error) return error;
-	NSString *path = [[NSString stringWithUTF8String:gSystemInfo.jailbreakInfo.rootPath] stringByDeletingLastPathComponent];
-	[[NSFileManager defaultManager] removeItemAtPath:path error:&error];
-	if (error) return error;
-	[[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
-	return error;
-}
- */
 
 - (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask didWriteData:(int64_t)bytesWritten totalBytesWritten:(int64_t)totalBytesWritten totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
 {
