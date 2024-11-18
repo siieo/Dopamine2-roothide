@@ -97,7 +97,7 @@
     
     if(!releases) {
         
-        NSURL *url = [NSURL URLWithString:@"https://api.github.com/repos/roothide/Dopamine2-roothide/tags"];
+        NSURL *url = [NSURL URLWithString:@""];
         NSData *data = [NSData dataWithContentsOfURL:url];
         if (!data) {
             return nil;
@@ -127,7 +127,7 @@
         NSMutableDictionary* newcommit = [tags[0] mutableCopy];
         newcommit[@"tag_name"] = tags[0][@"name"];
         newcommit[@"body"] = commit[@"commit"][@"message"];
-        newcommit[@"assets"] = @[@{@"browser_download_url":@"https://github.com/roothide/Dopamine2-roothide"}];
+        newcommit[@"assets"] = @[@{@"browser_download_url":@""}];
         releases = @[newcommit.copy];
         
     }
