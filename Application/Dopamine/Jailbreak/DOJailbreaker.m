@@ -471,12 +471,6 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	
 	[[DOEnvironmentManager sharedManager] setIDownloadEnabled:idownloadEnabled needsUnsandbox:NO];
 	
-	//printf("Starting launch daemons...\n");
-	//exec_cmd_trusted(JBROOT_PATH("/usr/bin/launchctl"), "bootstrap", "system", JBROOT_PATH("/Library/LaunchDaemons"), NULL);
-	//exec_cmd_trusted(JBROOT_PATH("/usr/bin/launchctl"), "bootstrap", "system", JBROOT_PATH("/basebin/LaunchDaemons"), NULL);
-	// Note: This causes the app to freeze in some instances due to launchd only having physrw_pte, we might want to only do it when neccessary
-	// It's only neccessary when we don't immediately userspace reboot
-	
 	printf("Done!\n");
 }
 
