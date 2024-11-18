@@ -330,43 +330,47 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 - (NSError *)injectLaunchdHook
 {
 	mach_port_t serverPort = MACH_PORT_NULL;
-	if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &serverPort) != KERN_SUCCESS) {
-		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : @"Failed to allocate mach port"}];
-	}
-	
+	mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &serverPort);
 	mach_port_insert_right(mach_task_self(), serverPort, serverPort, MACH_MSG_TYPE_MAKE_SEND);
 
-	// Host a boomerang server that launchdhook will use
+	// Host a boomerang server that will be used by launchdhook to get the jailbreak primitives from this app
 	dispatch_semaphore_t boomerangDone = dispatch_semaphore_create(0);
 	dispatch_source_t serverSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, (uintptr_t)serverPort, 0, dispatch_get_main_queue());
 	dispatch_source_set_event_handler(serverSource, ^{
 		xpc_object_t xdict = nil;
-		if (!xpc_pipe_receive(serverPort, &xdict) && jbserver_received_boomerang_xpc_message(&gBoomerangServer, xdict) == JBS_BOOMERANG_DONE) {
-			dispatch_semaphore_signal(boomerangDone);
+		if (!xpc_pipe_receive(serverPort, &xdict)) {
+			if (jbserver_received_boomerang_xpc_message(&gBoomerangServer, xdict) == JBS_BOOMERANG_DONE) {
+				dispatch_semaphore_signal(boomerangDone);
+			}
 		}
 	});
 	dispatch_resume(serverSource);
 
-	// Inject the port into launchd via jbctl
+	// Stash port to server in launchd's initPorts[2]
+	// Since we don't have the neccessary entitlements, we need to do it over jbctl
+	posix_spawnattr_t attr;
+	posix_spawnattr_init(&attr);
+	posix_spawnattr_set_registered_ports_np(&attr, (mach_port_t[]){MACH_PORT_NULL, MACH_PORT_NULL, serverPort}, 3);
 	pid_t spawnedPid = 0;
 	const char *jbctlPath = JBROOT_PATH("/basebin/jbctl");
-	int spawnError = posix_spawn(&spawnedPid, jbctlPath, NULL, NULL, (char *const *)(const char *[]){ jbctlPath, "internal", "launchd_stash_port", NULL }, NULL);
+	int spawnError = posix_spawn(&spawnedPid, jbctlPath, NULL, &attr, (char *const *)(const char *[]){ jbctlPath, "internal", "launchd_stash_port", NULL }, NULL);
 	if (spawnError != 0) {
 		dispatch_cancel(serverSource);
 		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Spawning jbctl failed with error code %d", spawnError]}];
 	}
+	posix_spawnattr_destroy(&attr);
 
 	int status = 0;
-	while (waitpid(spawnedPid, &status, 0) != -1 && !(WIFEXITED(status) || WIFSIGNALED(status)));
+	while (waitpid(spawnedPid, &status, 0) != -1 && !WIFEXITED(status) && !WIFSIGNALED(status));
 
-	// Inject launchdhook.dylib into launchd using opainject
+	// Inject launchdhook.dylib into launchd via opainject
 	int r = exec_cmd(JBROOT_PATH("/basebin/opainject"), "1", JBROOT_PATH("/basebin/launchdhook.dylib"), NULL);
 	if (r != 0) {
 		dispatch_cancel(serverSource);
 		return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedLaunchdInjection userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"opainject failed with error code %d", r]}];
 	}
 
-	// Wait for boomerang process to finish and clean up
+	// Wait for everything to finish
 	dispatch_semaphore_wait(boomerangDone, DISPATCH_TIME_FOREVER);
 	dispatch_cancel(serverSource);
 	mach_port_deallocate(mach_task_self(), serverPort);
