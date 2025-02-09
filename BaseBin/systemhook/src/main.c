@@ -295,7 +295,7 @@ int posix_spawn_hook_roothide(pid_t *restrict pidp, const char *restrict path, s
 		if (jbclient_patch_exec_add(path, should_resume) != 0) { // jdb fault?
 			//restore flags
 			posix_spawnattr_setflags(attrp, flags);
-			return 99;
+			return 199;
 		}
 	}
 	char **envc = envbuf_mutcopy((const char **)envp);
@@ -319,7 +319,7 @@ int posix_spawn_hook_roothide(pid_t *restrict pidp, const char *restrict path, s
 		if (should_suspend) {
 			if(jbclient_patch_spawn(pid, should_resume) != 0) { // jdb fault? kill
 				kill(pid, SIGKILL);
-				return 98;
+				return 198;
 			}
 		}
 	}
@@ -655,7 +655,7 @@ __attribute__((constructor)) static void initializer(void)
 			}
 		}
 
-		if(string_has_suffix(gExecutablePath, "Dopamine.app/Dopamine")) {
+		if(string_has_suffix(gExecutablePath, "/Dopamine.app/Dopamine")) {
 			loadPathHook();
 		}
 

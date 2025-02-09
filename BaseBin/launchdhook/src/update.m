@@ -140,10 +140,10 @@ void jbupdate_update_system_info(void)
 			if (xpf_set_is_supported("amfi_oids")) {
 				sets[idx++] = "amfi_oids";
 			}
+
 			if (xpf_set_is_supported("devmode")) {
 				sets[idx++] = "devmode"; 
 			}
-
 			if (xpf_set_is_supported("badRecovery")) {
 				sets[idx++] = "badRecovery"; 
 			}
