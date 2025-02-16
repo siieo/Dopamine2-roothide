@@ -13,20 +13,15 @@
 #include <libjailbreak/jbclient_xpc.h>
 #include <libjailbreak/jbserver_domains.h>
 
-bool string_has_prefix(const char *str, const char* prefix)
-{
-	if (!str || !prefix) {
-		return false;
+bool string_has_prefix(const char *str, const char *prefix) {
+	if (!str || !prefix) return false;
+	while (*prefix) {
+	    if (*str != *prefix)
+	        return false;
+	    str++;
+	    prefix++;
 	}
-
-	size_t str_len = strlen(str);
-	size_t prefix_len = strlen(prefix);
-
-	if (str_len < prefix_len) {
-		return false;
-	}
-
-	return !strncmp(str, prefix, prefix_len);
+	return true;
 }
 
 bool string_has_suffix(const char* str, const char* suffix)
@@ -45,20 +40,23 @@ bool string_has_suffix(const char* str, const char* suffix)
 	return !strcmp(str + str_len - suffix_len, suffix);
 }
 
-void string_enumerate_components(const char *string, const char *separator, void (^enumBlock)(const char *pathString, bool *stop))
-{
-	char *stringCopy;
-	char *saveptr;
-	char *curString;
+void string_enumerate_components(const char *string, const char *separator, void (^enumBlock)(const char *pathString, bool *stop)) {
+	if (!string) return;
+	
+	char *stringCopy = strdup(string); // make a mutable copy
+	if (!stringCopy) return; // handle allocation failure
 
-	for (curString = strtok_r((char *)string, separator, &saveptr);
-		 curString != NULL;
-		 curString = strtok_r(NULL, separator, &saveptr))
+	char *saveptr;
+	for (char *curString = strtok_r(stringCopy, separator, &saveptr);
+	     curString != NULL;
+	     curString = strtok_r(NULL, separator, &saveptr))
 	{
 		bool stop = false;
 		enumBlock(curString, &stop);
 		if (stop) break;
 	}
+	
+	free(stringCopy);
 }
 
 static kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
