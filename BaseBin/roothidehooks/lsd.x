@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <spawn.h>
 #include <roothide.h>
-#import "common.h"
+#include "common.h"
 
 extern char **environ;
 
