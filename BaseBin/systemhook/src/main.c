@@ -509,50 +509,44 @@ char HOOK_DYLIB_PATH[PATH_MAX] = {0};
 
 __attribute__((constructor)) static void initializer(void)
 {
-//////////////////////////////////////////////
-	struct dl_info di={0};
+	// Retrieve our own library path and store it in the global buffer.
+	struct dl_info di = {0};
 	dladdr((void*)initializer, &di);
 	strncpy(HOOK_DYLIB_PATH, di.dli_fname, sizeof(HOOK_DYLIB_PATH));
-/////////////////////////////////////////////////////////////////////////
 
-	// Tell jbserver (in launchd) that this process exists
-	// This will disable page validation, which allows the rest of this constructor to apply hooks
-	if (jbclient_process_checkin(&JB_RootPath, &JB_BootUUID, &JB_SandboxExtensions, &gFullyDebugged) != 0) return;
+	// Tell jbserver (in launchd) that this process exists,
+	// initializing JB_RootPath, JB_BootUUID, JB_SandboxExtensions, and gFullyDebugged.
+	if (jbclient_process_checkin(&JB_RootPath, &JB_BootUUID, &JB_SandboxExtensions, &gFullyDebugged) != 0)
+		return;
 
-	// Apply sandbox extensions
+	// Apply sandbox extensions.
 	apply_sandbox_extensions();
 
-	// Unset DYLD_INSERT_LIBRARIES, but only if systemhook itself is the only thing contained in it
-	// Feeable attempt at making jailbreak detection harder
+	// Unset DYLD_INSERT_LIBRARIES if it only contains our own library path.
 	const char *dyldInsertLibraries = getenv("DYLD_INSERT_LIBRARIES");
-	if (dyldInsertLibraries) {
-		if (!strcmp(dyldInsertLibraries, HOOK_DYLIB_PATH)) {
-			unsetenv("DYLD_INSERT_LIBRARIES");
-		}
-	}
+	if (dyldInsertLibraries && !strcmp(dyldInsertLibraries, HOOK_DYLIB_PATH))
+		unsetenv("DYLD_INSERT_LIBRARIES");
 
-	// Apply posix_spawn / execve hooks
+	// Install posix_spawn and execve hooks based on iOS version.
 	if (__builtin_available(iOS 16.0, *)) {
 		litehook_hook_function(__posix_spawn, __posix_spawn_hook);
 		litehook_hook_function(__execve, __execve_hook);
-	}
-	else {
-		// On iOS 15 there is a way to hook posix_spawn and execve without doing instruction replacements
-		// This is fairly convinient due to instruction replacements being presumed to be the primary trigger for spinlock panics on iOS 15 arm64e
-		// Unfortunately Apple decided to remove these in iOS 16 :( Doesn't matter too much though because spinlock panics are fixed there
-
+	} else {
 		void **posix_spawn_with_filter = litehook_find_dsc_symbol("/usr/lib/system/libsystem_kernel.dylib", "_posix_spawn_with_filter");
-		*posix_spawn_with_filter = __posix_spawn_hook_with_filter;
+		if (posix_spawn_with_filter)
+			*posix_spawn_with_filter = __posix_spawn_hook_with_filter;
 
 		void **execve_with_filter = litehook_find_dsc_symbol("/usr/lib/system/libsystem_kernel.dylib", "_execve_with_filter");
-		*execve_with_filter = __execve_hook;
+		if (execve_with_filter)
+			*execve_with_filter = __execve_hook;
 	}
 
-	// Initialize stuff neccessary for sandbox_apply hook
+	// Initialize the sandbox_apply hook by loading the sandbox library.
 	gLibSandboxHandle = dlopen("/usr/lib/libsandbox.1.dylib", RTLD_FIRST | RTLD_LOCAL | RTLD_LAZY);
-	sandbox_apply_orig = dlsym(gLibSandboxHandle, "sandbox_apply");
+	if (gLibSandboxHandle)
+		sandbox_apply_orig = dlsym(gLibSandboxHandle, "sandbox_apply");
 
-	// Apply dyld hooks
+	// Apply dyld hooks.
 	void ***gDyldPtr = litehook_find_dsc_symbol("/usr/lib/system/libdyld.dylib", "__ZN5dyld45gDyldE");
 	if (gDyldPtr) {
 		dyld_hook_routine(*gDyldPtr, 14, (void *)&dyld_dlopen_hook, (void **)&dyld_dlopen_orig, 0xBF31);
@@ -562,51 +556,40 @@ __attribute__((constructor)) static void initializer(void)
 		dyld_hook_routine(*gDyldPtr, 98, (void *)&dyld_dlopen_audited_hook, (void **)&dyld_dlopen_audited_orig, 0xD2A5);
 	}
 
-//////////////////////////////////////////////////////////////////////
-  /* after unsandboxing jbroot and applying dyldhooks */
-
-	const char* DYLD_IN_CACHE = getenv("DYLD_IN_CACHE");
-	if(strcmp(DYLD_IN_CACHE, "0") == 0) {
+	// If the DYLD_IN_CACHE variable is set to "0", remove it.
+	const char *DYLD_IN_CACHE = getenv("DYLD_IN_CACHE");
+	if (DYLD_IN_CACHE && strcmp(DYLD_IN_CACHE, "0") == 0)
 		unsetenv("DYLD_IN_CACHE");
-	}
+
+	// Redirect paths based on the jailbreak root path.
 	redirect_paths(JB_RootPath);
 
+	// Load the roothide initialization library.
 	dlopen(JBROOT_PATH("/usr/lib/roothideinit.dylib"), RTLD_NOW);
-	
-//////////////////////////////////////////////////////////////////////////
 
 #ifdef __arm64e__
-	// Since pages have been modified in this process, we need to load forkfix to ensure forking will work
-	// Optimization: If the process cannot fork at all due to sandbox, we don't need to do anything
-	if (sandbox_check(getpid(), "process-fork", SANDBOX_CHECK_NO_REPORT, NULL) == 0) {
+	// For arm64e: if the process can fork, load forkfix to ensure forking works properly.
+	if (sandbox_check(getpid(), "process-fork", SANDBOX_CHECK_NO_REPORT, NULL) == 0)
 		dlopen(JBROOT_PATH("/basebin/forkfix.dylib"), RTLD_NOW);
-	}
 #endif
 
+	// Load executable path and then install hooks specific to certain executables.
 	if (load_executable_path() == 0) {
-		// Load rootlesshooks and watchdoghook if neccessary
 		if (!strcmp(gExecutablePath, "/usr/sbin/cfprefsd") ||
 			!strcmp(gExecutablePath, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") ||
-			!strcmp(gExecutablePath, "/usr/libexec/lsd")) {
+			!strcmp(gExecutablePath, "/usr/libexec/lsd"))
+		{
 			dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"), RTLD_NOW);
-		}
-		else if (!strcmp(gExecutablePath, "/usr/libexec/watchdogd")) {
+		} else if (!strcmp(gExecutablePath, "/usr/libexec/watchdogd")) {
 			dlopen(JBROOT_PATH("/basebin/watchdoghook.dylib"), RTLD_NOW);
 		}
 
-		// ptrace hook to allow attaching a debugger to processes that systemhook did not inject into
-		// e.g. allows attaching debugserver to an app where tweak injection has been disabled via choicy
-		// since we want to keep hooks minimal and debugserver is the only thing I can think of that would
-		// call ptrace and expect it to allow invalid pages, we only hook it in debugserver
-		// this check is a bit shit since we rely on the name of the binary, but who cares ¯\_(ツ)_/¯
-		if (string_has_suffix(gExecutablePath, "/debugserver")) {
+		// Hook ptrace only for debugserver to allow attaching debuggers where tweaks are disabled.
+		if (string_has_suffix(gExecutablePath, "/debugserver"))
 			litehook_hook_function(ptrace, ptrace_hook);
-		}
 
 #ifndef __arm64e__
-		// On arm64, writing to executable pages removes CS_VALID from the csflags of the process
-		// These hooks are neccessary to get the system to behave with this
-		// They are ugly but needed
+		// For arm64: apply hooks to maintain CS_VALID.
 		litehook_hook_function(csops, csops_hook);
 		litehook_hook_function(csops_audittoken, csops_audittoken_hook);
 		if (__builtin_available(iOS 16.0, *)) {
@@ -619,27 +602,25 @@ __attribute__((constructor)) static void initializer(void)
 #endif
 		if (__builtin_available(iOS 16.0, *)) {
 			bool is_app_path(const char* path);
-			if(!is_app_path(gExecutablePath)) {
+			if (!is_app_path(gExecutablePath)) {
 				litehook_hook_function(__sysctl, __sysctl_hook);
 				litehook_hook_function(__sysctlbyname, __sysctlbyname_hook);
 			}
 		}
 
-		if(string_has_suffix(gExecutablePath, "/Dopamine.app/Dopamine")) {
+		if (string_has_suffix(gExecutablePath, "/Dopamine.app/Dopamine"))
 			loadPathHook();
-		}
 
-		dlopen(JBROOT_PATH("/usr/lib/roothidepatch.dylib"), RTLD_NOW); //require jit
+		// Load roothide patch (requires JIT).
+		dlopen(JBROOT_PATH("/usr/lib/roothidepatch.dylib"), RTLD_NOW);
 
-		// Load tweaks if desired
-		// We can hardcode /var/jb here since if it doesn't exist, loading TweakLoader.dylib is not going to work anyways
+		// Load tweaks if enabled and the tweak loader exists.
 		const char *tweakLoaderPath = JBROOT_PATH("/usr/lib/TweakLoader.dylib");
-		if (should_enable_tweaks() && access(tweakLoaderPath, F_OK) == 0) {
+		if (should_enable_tweaks() && access(tweakLoaderPath, F_OK) == 0)
 			dlopen(tweakLoaderPath, RTLD_NOW);
-		}
 
 #ifndef __arm64e__
-		// Feeable attempt at adding back CS_VALID
+		// Revalidate code signatures (add back CS_VALID).
 		jbclient_cs_revalidate();
 #endif
 	}
