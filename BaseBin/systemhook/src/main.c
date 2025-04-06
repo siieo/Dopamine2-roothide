@@ -438,45 +438,15 @@ void redirect_path_env(const char* rootdir)
 {
 	//for now libSystem should be initlized, container should be set.
 
-	char* homedir = NULL;
-
-/* 
-there is a bug in NSHomeDirectory,
-if a containerized root process changes its uid/gid, 
-NSHomeDirectory will return a home directory that it cannot access. (exclude NSTemporaryDirectory)
-We just keep this bug:
-*/
-	if(!issetugid()) // issetugid() should always be false at this time. (but how about persona-mgmt? idk)
-	{
-	homedir = getenv("CFFIXED_USER_HOME");
-	if(homedir)
-	{
-#define CONTAINER_PATH_PREFIX   "/private/var/mobile/Containers/Data/" // +/Application,PluginKitPlugin,InternalDaemon
-		if(strncmp(homedir, CONTAINER_PATH_PREFIX, sizeof(CONTAINER_PATH_PREFIX)-1) == 0)
-		{
-		return; //containerized
-		}
-		else
-		{
-		homedir = NULL; //from parent, drop it
-		}
-	}
+	char *homedir = getenv("CFFIXED_USER_HOME");
+#define CONTAINER_PATH_PREFIX	"/private/var/mobile/Containers/Data/"
+	if (homedir && strncmp(homedir, CONTAINER_PATH_PREFIX, sizeof(CONTAINER_PATH_PREFIX) - 1) == 0) {
+		return;	// Containerized environment; no redirection needed.
 	}
 
-	if(!homedir) {
-	struct passwd* pwd = getpwuid(geteuid());
-	if(pwd && pwd->pw_dir) {
-		homedir = pwd->pw_dir;
-	}
-	}
-
-	// if(!homedir) {
-	//	 //CFCopyHomeDirectoryURL does, but not for NSHomeDirectory
-	//	 homedir = getenv("HOME");
-	// }
-
-	if(!homedir) {
-	homedir = "/var/empty";
+	if (!homedir) {
+		struct passwd *pwd = getpwuid(geteuid());
+		homedir = (pwd && pwd->pw_dir) ? pwd->pw_dir : "/var/empty";
 	}
 
 	char newhome[PATH_MAX]={0};
