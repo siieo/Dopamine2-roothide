@@ -378,97 +378,88 @@ int ensure_randomized_cdhash(const char* inputPath, void* cdhashOut);
 	return nil;
 }
 
-- (NSError *)finalizeBootstrapIfNeeded
-{
+- (NSError *)finalizeBootstrapIfNeeded {
 	return [[DOEnvironmentManager sharedManager] finalizeBootstrap];
 }
 
-- (void)runWithError:(NSError **)errOut didRemoveJailbreak:(BOOL*)didRemove showLogs:(BOOL *)showLogs
-{
+- (void)runWithError:(NSError **)errOut didRemoveJailbreak:(BOOL *)didRemove showLogs:(BOOL *)showLogs {
 	dispatch_async(dispatch_get_main_queue(), ^{
-		[[UIApplication sharedApplication] setIdleTimerDisabled:YES];
+		[UIApplication.sharedApplication setIdleTimerDisabled:YES];
 	});
+
+	DOPreferenceManager *prefs = [DOPreferenceManager sharedManager];
 	
-	BOOL removeJailbreakEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"removeJailbreakEnabled" fallback:NO];
-	BOOL tweaksEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"tweakInjectionEnabled" fallback:YES];
-	BOOL idownloadEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"idownloadEnabled" fallback:NO];
-	BOOL appJITEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"appJITEnabled" fallback:YES];
-	NSNumber *jetsamMultiplierOption = [[DOPreferenceManager sharedManager] preferenceValueForKey:@"jetsamMultiplier"];
-	
+	BOOL removeJailbreakEnabled = [prefs boolPreferenceValueForKey:@"removeJailbreakEnabled" fallback:NO];
+	BOOL tweaksEnabled = [prefs boolPreferenceValueForKey:@"tweakInjectionEnabled" fallback:YES];
+	BOOL idownloadEnabled = [prefs boolPreferenceValueForKey:@"idownloadEnabled" fallback:NO];
+	BOOL appJITEnabled = [prefs boolPreferenceValueForKey:@"appJITEnabled" fallback:YES];
+	NSNumber *jetsamMultiplierOption = [prefs preferenceValueForKey:@"jetsamMultiplier"];
+
 	struct utsname systemInfo;
 	uname(&systemInfo);
-	NSString *startLog = [NSString stringWithFormat:@"Starting Jailbreak (Model: %s, %@, Configuration: {removeJailbreak=%d, tweakInjection=%d, idownload=%d, appJIT=%d})", systemInfo.machine, NSProcessInfo.processInfo.operatingSystemVersionString, removeJailbreakEnabled, tweaksEnabled, idownloadEnabled, appJITEnabled];
+
+	NSString *startLog = [NSString stringWithFormat:
+		@"Starting Jailbreak (Model: %s, %@, Configuration: {removeJailbreak=%d, tweakInjection=%d, idownload=%d, appJIT=%d})",
+		systemInfo.machine, NSProcessInfo.processInfo.operatingSystemVersionString,
+		removeJailbreakEnabled, tweaksEnabled, idownloadEnabled, appJITEnabled
+	];
 	[[DOUIManager sharedInstance] sendLog:startLog debug:YES];
-	
-	*errOut = [self gatherSystemInformation];
-	if (*errOut) return;
-	*errOut = [self doExploitation];
-	if (*errOut) return;
-	
+
+	if ((*errOut = [self gatherSystemInformation])) return;
+	if ((*errOut = [self doExploitation])) return;
+
 	gSystemInfo.jailbreakSettings.markAppsAsDebugged = appJITEnabled;
-	gSystemInfo.jailbreakSettings.jetsamMultiplier = jetsamMultiplierOption ? (jetsamMultiplierOption.doubleValue / 2) : 0;
-	
+	gSystemInfo.jailbreakSettings.jetsamMultiplier = jetsamMultiplierOption ? jetsamMultiplierOption.doubleValue / 2 : 0;
+
 	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Building Phys R/W Primitive") debug:NO];
-	*errOut = [self buildPhysRWPrimitive];
-	if (*errOut) return;
+	if ((*errOut = [self buildPhysRWPrimitive])) return;
+
 	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Cleaning Up Exploits") debug:NO];
-	*errOut = [self cleanUpExploits];
-	if (*errOut) return;
-	
-	// We will not be able to reset this after elevating privileges, so do it now
-	if (removeJailbreakEnabled) [[DOPreferenceManager sharedManager] setPreferenceValue:@NO forKey:@"removeJailbreakEnabled"];
+	if ((*errOut = [self cleanUpExploits])) return;
+
+	if (removeJailbreakEnabled) {
+		[prefs setPreferenceValue:@NO forKey:@"removeJailbreakEnabled"];
+	}
 
 	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Elevating Privileges") debug:NO];
-	*errOut = [self elevatePrivileges];
-	if (*errOut) return;
-	*errOut = [self showNonDefaultSystemApps];
-	if (*errOut) return;
-	*errOut = [self ensureDevModeEnabled];
-	if (*errOut) return;
+	if ((*errOut = [self elevatePrivileges])) return;
+	if ((*errOut = [self showNonDefaultSystemApps])) return;
+	if ((*errOut = [self ensureDevModeEnabled])) return;
 
-	// Now that we are unsandboxed, populate the jailbreak root path
-	*errOut = [[DOEnvironmentManager sharedManager] ensureJailbreakRootExists];
-	if (*errOut) return;
-	
+	if ((*errOut = [[DOEnvironmentManager sharedManager] ensureJailbreakRootExists])) return;
+
 	if (removeJailbreakEnabled) {
 		[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Removing Jailbreak") debug:NO];
 		*errOut = [[DOEnvironmentManager sharedManager] deleteBootstrap];
 		*didRemove = YES;
 		return;
 	}
-	
-	*errOut = [[DOEnvironmentManager sharedManager] prepareBootstrap];
-	if (*errOut) return;
+
+	if ((*errOut = [[DOEnvironmentManager sharedManager] prepareBootstrap])) return;
+
 	setenv("PATH", "/sbin:/bin:/usr/sbin:/usr/bin:/rootfs/sbin:/rootfs/bin:/rootfs/usr/sbin:/rootfs/usr/bin", 1);
 	setenv("TERM", "xterm-256color", 1);
-	
+
 	if (!tweaksEnabled) {
-		printf("Creating safe mode marker file since tweaks were disabled in settings\n");
+		NSLog(@"Creating safe mode marker file since tweaks were disabled in settings");
 		[[NSData data] writeToFile:JBROOT_PATH(@"/basebin/.safe_mode") atomically:YES];
 	}
-	
-	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Loading BaseBin TrustCache") debug:NO];
-	*errOut = [self loadBasebinTrustcache];
-	if (*errOut) return;
-	
-	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Environment") debug:NO];
-	*errOut = [self injectLaunchdHook];
-	if (*errOut) return;
-	
-	// don't use dyld-in-cache due to dyldhooks
-	setenv("DYLD_IN_CACHE", "0", 1);
 
-	// don't load tweak during jailbreaking
+	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Loading BaseBin TrustCache") debug:NO];
+	if ((*errOut = [self loadBasebinTrustcache])) return;
+
+	[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Environment") debug:NO];
+	if ((*errOut = [self injectLaunchdHook])) return;
+
+	setenv("DYLD_IN_CACHE", "0", 1);
 	setenv("DISABLE_TWEAKS", "1", 1);
-	// using the stock path during jailbreaking
 	setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
-	
-	*errOut = [self finalizeBootstrapIfNeeded];
-	if (*errOut) return;
-	
+
+	if ((*errOut = [self finalizeBootstrapIfNeeded])) return;
+
 	[[DOEnvironmentManager sharedManager] setIDownloadEnabled:idownloadEnabled needsUnsandbox:NO];
-	
-	printf("Done!\n");
+
+	NSLog(@"Done!");
 }
 
 - (void)finalize
