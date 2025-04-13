@@ -381,11 +381,26 @@ int __execve_hook(const char *path, char *const argv[], char *const envp[])
 //some process may be killed by sandbox if call systme getppid()
 pid_t __getppid()
 {
+	int32_t opt[4] = {
+ 		CTL_KERN,
+ 		KERN_PROC,
+ 		KERN_PROC_PID,
+ 		getpid(),
+ 	};
+ 	struct kinfo_proc info={0};
+ 	size_t len = sizeof(struct kinfo_proc);
+ 	if(sysctl(opt, 4, &info, &len, NULL, 0) == 0) {
+ 		if((info.kp_proc.p_flag & P_TRACED) != 0) {
+ 			return info.kp_proc.p_oppid;
+ 		}
+ 	}
+
 	struct proc_bsdinfo procInfo;
-	if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &procInfo, sizeof(procInfo)) <= 0) {
-		return -1;
+	//some process may be killed by sandbox if call systme getppid() so try this first
+ 	if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &procInfo, sizeof(procInfo)) == sizeof(procInfo)) {
+ 		return procInfo.pbi_ppid;
 	}
-	return procInfo.pbi_ppid;
+	return getppid();
 }
 
 static uid_t _CFGetSVUID(bool *successful) {
@@ -449,9 +464,12 @@ void redirect_path_env(const char* rootdir)
 		homedir = (pwd && pwd->pw_dir) ? pwd->pw_dir : "/var/empty";
 	}
 
-	char newhome[PATH_MAX]={0};
-	snprintf(newhome,sizeof(newhome),"%s/%s",rootdir,homedir);
-	setenv("CFFIXED_USER_HOME", newhome, 1);
+	if(homedir[0] == '/') {
+ 		char newhome[PATH_MAX*2]={0};
+ 		strlcpy(newhome, rootdir, sizeof(newhome));
+ 		strlcat(newhome, homedir, sizeof(newhome));
+ 		setenv("CFFIXED_USER_HOME", newhome, 1);
+ 	}
 }
 
 void redirect_paths(const char* rootdir)
@@ -463,16 +481,16 @@ void redirect_paths(const char* rootdir)
 	if(_NSGetExecutablePath(executablePath, &bufsize) != 0)
 		break;
 	
-	char realexepath[PATH_MAX];
+	char realexepath[PATH_MAX]={0};
 	if(!realpath(executablePath, realexepath))
 		break;
 		
-	char realjbroot[PATH_MAX];
+	char realjbroot[PATH_MAX+1]={0};
 	if(!realpath(rootdir, realjbroot))
 		break;
 	
-	if(realjbroot[strlen(realjbroot)] != '/')
-		strcat(realjbroot, "/");
+	if(realjbroot[0] && realjbroot[strlen(realjbroot)-1] != '/')
+             strlcat(realjbroot, "/", sizeof(realjbroot));
 	
 	if(strncmp(realexepath, realjbroot, strlen(realjbroot)) != 0)
 		break;
